@@ -462,7 +462,8 @@ std::vector<float> parseVec(const std::string& s) {
     return v;
 }
 
-// Extract a JSON string field value (handles basic escape sequences)
+// Extract a JSON string field value (handles all standard JSON escape sequences
+// including \uXXXX Unicode escapes, which Ollama uses for '<', '>', '&', etc.)
 std::string extractStr(const std::string& body, const std::string& key) {
     size_t p = body.find('"' + key + '"');
     if (p == std::string::npos) return "";
@@ -478,9 +479,49 @@ std::string extractStr(const std::string& body, const std::string& key) {
             switch (body[p]) {
                 case '"':  result += '"';  break;
                 case '\\': result += '\\'; break;
+                case '/':  result += '/';  break;
                 case 'n':  result += '\n'; break;
                 case 'r':  result += '\r'; break;
                 case 't':  result += '\t'; break;
+                case 'b':  result += '\b'; break;
+                case 'f':  result += '\f'; break;
+                case 'u': {
+                    // Decode \uXXXX → UTF-8
+                    // Require exactly 4 hex digits; if malformed, emit literally.
+                    if (p + 4 < body.size()) {
+                        auto hexVal = [](char c) -> int {
+                            if (c >= '0' && c <= '9') return c - '0';
+                            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                            return -1;
+                        };
+                        int h0 = hexVal(body[p+1]);
+                        int h1 = hexVal(body[p+2]);
+                        int h2 = hexVal(body[p+3]);
+                        int h3 = hexVal(body[p+4]);
+                        if (h0 >= 0 && h1 >= 0 && h2 >= 0 && h3 >= 0) {
+                            unsigned int cp = (unsigned int)(
+                                (h0 << 12) | (h1 << 8) | (h2 << 4) | h3);
+                            p += 4; // skip the 4 hex digits (loop does +1 for the 'u')
+                            // Encode codepoint as UTF-8
+                            if (cp < 0x0080u) {
+                                result += (char)cp;
+                            } else if (cp < 0x0800u) {
+                                result += (char)(0xC0u | (cp >> 6));
+                                result += (char)(0x80u | (cp & 0x3Fu));
+                            } else {
+                                result += (char)(0xE0u | (cp >> 12));
+                                result += (char)(0x80u | ((cp >> 6) & 0x3Fu));
+                                result += (char)(0x80u | (cp & 0x3Fu));
+                            }
+                            break;
+                        }
+                    }
+                    // Malformed \uXXXX — emit 'u' literally and let the
+                    // surrounding loop handle the remaining characters normally.
+                    result += 'u';
+                    break;
+                }
                 default:   result += body[p]; break;
             }
         } else {
@@ -522,6 +563,59 @@ void cors(httplib::Response& res) {
     res.set_header("Access-Control-Allow-Origin",  "*");
     res.set_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     res.set_header("Access-Control-Allow-Headers", "Content-Type");
+}
+
+// =====================================================================
+//  CHAT HISTORY TYPES + PARSER
+// =====================================================================
+
+struct ChatTurn {
+    std::string role;    // "user" or "assistant"
+    std::string content;
+};
+
+// Parse the "history" JSON array from a request body.
+// Expected shape: {"history":[{"role":"user","content":"..."}, ...]}
+// Uses the existing extractStr() helper to decode each field.
+std::vector<ChatTurn> parseHistory(const std::string& body) {
+    std::vector<ChatTurn> result;
+    size_t p = body.find("\"history\"");
+    if (p == std::string::npos) return result;
+    p = body.find('[', p);
+    if (p == std::string::npos) return result;
+
+    // Walk to the matching ']'
+    size_t end = p + 1;
+    int depth = 1;
+    while (end < body.size() && depth > 0) {
+        if      (body[end] == '[') depth++;
+        else if (body[end] == ']') depth--;
+        end++;
+    }
+    // Slice out just the array string
+    std::string arr = body.substr(p, end - p);
+
+    // Parse each { ... } object in the array
+    size_t pos = 0;
+    while (pos < arr.size()) {
+        size_t objStart = arr.find('{', pos);
+        if (objStart == std::string::npos) break;
+        size_t objEnd = objStart + 1;
+        int d = 1;
+        while (objEnd < arr.size() && d > 0) {
+            if      (arr[objEnd] == '{') d++;
+            else if (arr[objEnd] == '}') d--;
+            objEnd++;
+        }
+        std::string obj = arr.substr(objStart, objEnd - objStart);
+        ChatTurn turn;
+        turn.role    = extractStr(obj, "role");
+        turn.content = extractStr(obj, "content");
+        if (!turn.role.empty() && !turn.content.empty())
+            result.push_back(turn);
+        pos = objEnd;
+    }
+    return result;
 }
 
 // =====================================================================
@@ -996,8 +1090,8 @@ int main() {
         res.set_content(ss.str(), "application/json");
     });
 
-    // POST /doc/ask  {"question":"...","k":3}
-    // Full RAG pipeline: embed → retrieve → generate
+    // POST /doc/ask  {"question":"...","k":3,"history":[{"role":"user","content":"..."},...] }
+    // Full RAG pipeline: embed → retrieve → generate (with multi-turn history)
     svr.Post("/doc/ask", [&](const httplib::Request& req, httplib::Response& res) {
         cors(res);
         auto question = extractStr(req.body, "question");
@@ -1005,6 +1099,10 @@ int main() {
         if (question.empty()) {
             res.set_content("{\"error\":\"need question\"}", "application/json"); return;
         }
+
+        // Parse conversation history (up to 10 prior turns)
+        auto history = parseHistory(req.body);
+        if ((int)history.size() > 10) history.erase(history.begin(), history.begin() + ((int)history.size() - 10));
 
         // Step 1: embed the question
         auto qEmb = ollama.embed(question);
@@ -1019,12 +1117,24 @@ int main() {
         const float relevanceThreshold = 0.5f;
         std::vector<std::pair<float, DocItem>> relevantHits;
         for (auto& hit : hits) {
-            if (hit.first < relevanceThreshold) {
+            if (hit.first < relevanceThreshold)
                 relevantHits.push_back(hit);
-            }
         }
 
-        // Step 4: build prompt based on context availability
+        // Step 4a: build conversation history block
+        std::string historyBlock;
+        if (!history.empty()) {
+            historyBlock = "Previous conversation:\n";
+            for (auto& turn : history) {
+                if (turn.role == "user")
+                    historyBlock += "User: " + turn.content + "\n";
+                else
+                    historyBlock += "Assistant: " + turn.content + "\n";
+            }
+            historyBlock += "\n";
+        }
+
+        // Step 4b: build full prompt
         std::string prompt;
         if (!relevantHits.empty()) {
             // RAG mode: include context
@@ -1036,16 +1146,18 @@ int main() {
             prompt = "You are a helpful assistant. Answer the user's question directly. "
                      "Use the provided context if it contains relevant information. "
                      "If it doesn't, just use your own general knowledge. "
-                     "IMPORTANT: Do NOT mention the 'context', 'provided text', or say things like 'the context doesn't mention'. "
-                     "Just answer the question naturally.\n\n"
-                     "Context:\n" + ctx.str() +
-                     "Question: " + question + "\n\n"
-                     "Answer:";
+                     "IMPORTANT: Do NOT mention the 'context', 'provided text', or say things like "
+                     "'the context doesn't mention'. Just answer the question naturally.\n\n"
+                     + historyBlock
+                     + "Context:\n" + ctx.str()
+                     + "Current question: " + question + "\n\n"
+                     + "Answer:";
         } else {
             // Fallback: no relevant context, answer directly
-            prompt = "Answer the question clearly and concisely:\n"
-                     "Question: " + question + "\n\n"
-                     "Answer:";
+            prompt = "You are a helpful assistant. Answer the question clearly and concisely.\n\n"
+                     + historyBlock
+                     + "Current question: " + question + "\n\n"
+                     + "Answer:";
         }
 
         // Step 5: generate answer
