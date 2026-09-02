@@ -325,6 +325,48 @@ KD-Tree pruning relies on axis-aligned distance bounds. In high dimensions, almo
 | Port 8080 already in use | Kill the process: `netstat -ano \| findstr 8080` then `taskkill /PID <pid> /F` |
 | LLM answer is slow | Normal — llama3.2 takes 10–30s on a laptop CPU. Use llama3.2:1b for faster answers |
 
+
+Issues we've encountered and solved
+Second message couldn't be sent
+Duplicate messageInput IDs caused getElementById() to select the hidden first textarea.
+Fixed by removing the old welcome composer from the DOM when entering active chat.
+Follow-up questions had no context
+Backend was stateless.
+Added chatMessages[] on frontend and conversation history in /doc/ask.
+Previous turns are now sent to Ollama.
+Chat history wasn't persistent
+History existed only in memory.
+Added localStorage persistence.
+History is updated as conversations change.
+Markdown/code responses looked like plain text
+Added Markdown rendering with marked.
+Added highlight.js syntax highlighting.
+Added language labels and Copy buttons.
+OWN-AI caused heavy system load
+4.7 GB llama3 + KV cache + multiple development processes was too much for an 8 GB Mac.
+Reduced context window to 2048.
+Added output-token limits.
+Limited server thread pool to 4.
+Added configurable lightweight models.
+Reduced redundant embedding storage.
+Reused Ollama HTTP clients.
+Accidental/unsafe automated testing
+Antigravity was opening localhost and automatically entering prompts during testing.
+We identified this as an IDE/testing workflow issue rather than OWN-AI functionality.
+Future testing will be manual and controlled.
+Current status
+
+I'd put:
+
+Core chat: ✅
+Multi-turn conversation: ✅ implemented, pending controlled verification
+Persistent history: ✅ implemented, pending verification
+Markdown/code rendering: ✅
+Light/dark UI: ✅
+Performance optimization: ✅ Phase 4 implemented
+Streaming responses: ⏳ Phase 5
+Full regression testing: ⏳
+
 ### Use a Smaller/Faster LLM
 
 If llama3.2 is too slow on your laptop, switch to the 1B model:
