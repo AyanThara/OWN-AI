@@ -101,69 +101,55 @@ Observed results on the 8 GB Mac:
 ---
 
 ## Phase 5 — Conversation Persistence, History & Memory
-**Status: 🚧 In Progress**
+**Status: ✅ Completed / Manually Verified**
 
-### Why this phase is needed
+### Problems identified
 
-The sidebar currently looks like ChatGPT-style history, but history entries are only stored as titles. Clicking an old conversation does not restore its messages. The current implementation therefore provides a history **appearance**, not a complete history **system**.
+The Phase 3 sidebar history was initially cosmetic. It stored conversation titles but did not store complete message sequences, conversation IDs, or a reliable restoration path. Clicking an old chat therefore did not reopen the conversation.
 
-### Goals
-- Store complete conversations, not only conversation titles.
-- Give every conversation a stable ID.
-- Save user and assistant messages together.
-- Make sidebar history entries clickable.
-- Restore a selected conversation exactly as it was displayed.
-- Keep conversations separated when using New Chat.
-- Persist conversations across page reloads/browser restarts.
-- Add a user-controlled **Save History** option.
-- Support **Temporary Chat / Don't Save** mode where the conversation disappears after leaving it and is not persisted.
-- Add the foundation for useful long-term memory separate from raw chat history.
-- Allow important information to be stored as memory rather than automatically treating every chat message as permanent memory.
-- Provide a way to view/delete saved memories.
-- Avoid sending unrelated old conversations to the model.
+During Phase 5 implementation/testing, additional UI and persistence issues were identified and fixed, including history persistence, old-chat restoration, Save History behavior, and the Memory drawer boundary/layout issue.
 
-### Planned data model
-Each saved conversation should contain at least:
+### Changes implemented
+- Replaced title-only history with complete conversation records.
+- Added unique conversation IDs and timestamps.
+- Persisted user and assistant message sequences locally.
+- Added click-to-restore behavior for previous conversations.
+- Rebuilt `chatMessages[]` when restoring a conversation so follow-up questions retain the restored context.
+- Added separate New Chat/conversation boundaries.
+- Added conversation deletion.
+- Added Save History ON/OFF control.
+- Added temporary/disappearing conversation behavior when Save History is OFF.
+- Added a separate long-term Memory system using local browser storage.
+- Added Memory management UI and the ability to remove saved memories.
+- Added live history search across conversation titles/message content.
+- Fixed the Memory drawer so it respects the existing sidebar/application boundaries.
+- Kept the implementation local to the browser with no new backend endpoints or Ollama calls.
 
-- `id`
-- `title`
-- `createdAt`
-- `updatedAt`
-- `messages[]`
-- `saved` / persistence state
+### Data separation
 
-Each message should contain:
+Chat history and long-term memory are intentionally separate:
 
-- `role` (`user` or `assistant`)
-- `content`
-- timestamp where useful
+- **History** stores actual conversation messages.
+- **Memory** stores explicitly saved useful information independently of individual conversations.
+- Disabling history does not turn ordinary chat messages into permanent memory.
 
-Long-term memory should be stored separately from conversation history so that deleting a conversation does not automatically delete an intentionally saved memory.
+### Manual verification performed
+- New Chat creates a clean conversation boundary.
+- Multiple user/assistant turns remain associated with the correct conversation.
+- Old conversations can be clicked and restored.
+- Restored conversations can continue with the existing multi-turn context.
+- Saved conversations survive browser refresh.
+- Save History ON persists conversations.
+- Save History OFF prevents new temporary conversations from being persisted.
+- Memory remains available separately from conversation history.
+- Existing RAG/chat behavior remains available after the Phase 5 changes.
 
-### Implementation order
-1. Replace title-only history with complete conversation objects.
-2. Add current-conversation ID/state.
-3. Save conversation after each completed assistant response.
-4. Render history from saved conversation objects.
-5. Add click-to-restore behavior.
-6. Make New Chat create a clean conversation boundary.
-7. Add delete conversation support.
-8. Add Save History / Temporary Chat control.
-9. Add separate memory storage and explicit memory actions.
-10. Verify reload/restart behavior.
+### Remaining verification before Phase 6
+- Perform one final end-to-end pass covering deletion, temporary chat, refresh, memory, and multiple conversations together.
+- Confirm the final working tree and GitHub branch are synchronized.
 
-### Verification targets
-- [ ] First message creates a conversation.
-- [ ] Multiple user/assistant turns are saved in order.
-- [ ] Clicking an old history item restores the complete conversation.
-- [ ] Restored conversations can continue normally.
-- [ ] New Chat does not mix messages with the previous conversation.
-- [ ] History survives page reload.
-- [ ] Temporary chats are not persisted.
-- [ ] Saved history can be deleted.
-- [ ] Explicit memories remain separate from chat history.
-- [ ] Memories can be removed.
-- [ ] No sensitive/unrelated chat data is automatically promoted to memory.
+### Git checkpoint
+- `a73f02e` — `feat: Phase 5 – conversation history, save toggle, memory system`
 
 ---
 
