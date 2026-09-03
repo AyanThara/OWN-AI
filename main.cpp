@@ -649,13 +649,23 @@ std::vector<std::string> chunkText(const std::string& text,
 //  OLLAMA CLIENT  — wraps local Ollama REST API
 //  Install:  https://ollama.com
 //  Models:   ollama pull nomic-embed-text
-//            ollama pull llama3.2
+//            ollama pull llama3          (default, ~4.5 GB)
+//  Low-RAM alternatives (set OWN_AI_GEN_MODEL):
+//    llama3.2:3b  (~2.2 GB)   phi3:mini  (~2.3 GB)
+//    gemma2:2b    (~1.6 GB)   llama3.2:1b (~0.9 GB)
 // =====================================================================
 
 class OllamaClient {
 private:
-    std::string host;
-    int         port;
+    // Persistent clients — avoids TCP connect/teardown on every request and
+    // enables HTTP/1.1 keep-alive over loopback. Each is guarded by its own
+    // mutex because httplib::Client is NOT thread-safe.
+    httplib::Client embedCli_;
+    httplib::Client genCli_;
+    httplib::Client checkCli_;
+    std::mutex      embedMu_;
+    std::mutex      genMu_;
+    std::mutex      checkMu_;
 
     // Escape a string for embedding inside a JSON string literal
     std::string esc(const std::string& s) {
@@ -693,39 +703,60 @@ private:
     }
 
 public:
-    std::string embedModel = "nomic-embed-text";
-    std::string genModel   = "llama3";
+    // Configurable via OWN_AI_GEN_MODEL / OWN_AI_EMBED_MODEL env vars
+    std::string embedModel;
+    std::string genModel;
+    // Configurable via OWN_AI_NUM_CTX / OWN_AI_NUM_PREDICT env vars
+    // num_ctx=2048 saves ~400-600 MB KV-cache vs Ollama's 4096 default
+    int numCtx     = 2048;
+    int numPredict = 512;
 
-    OllamaClient(const std::string& h = "127.0.0.1", int p = 11434)
-        : host(h), port(p) {}
+    explicit OllamaClient(const std::string& h = "127.0.0.1", int p = 11434)
+        : embedCli_(h, p), genCli_(h, p), checkCli_(h, p)
+    {
+        // Configure timeouts on each persistent client once at construction
+        embedCli_.set_connection_timeout(3, 0);
+        embedCli_.set_read_timeout(30, 0);
+        genCli_.set_connection_timeout(3, 0);
+        genCli_.set_read_timeout(180, 0);  // LLMs can be slow
+        checkCli_.set_connection_timeout(2, 0);
+        checkCli_.set_read_timeout(5, 0);
+
+        // Read model overrides from environment (no recompile needed)
+        embedModel = "nomic-embed-text";
+        genModel   = "llama3";
+        if (const char* v = std::getenv("OWN_AI_EMBED_MODEL")) embedModel = v;
+        if (const char* v = std::getenv("OWN_AI_GEN_MODEL"))   genModel   = v;
+        if (const char* v = std::getenv("OWN_AI_NUM_CTX"))     try { numCtx     = std::stoi(v); } catch (...) {}
+        if (const char* v = std::getenv("OWN_AI_NUM_PREDICT")) try { numPredict = std::stoi(v); } catch (...) {}
+    }
 
     bool isAvailable() {
-        httplib::Client cli(host, port);
-        cli.set_connection_timeout(2, 0);
-        auto res = cli.Get("/api/tags");
+        std::lock_guard<std::mutex> lk(checkMu_);
+        auto res = checkCli_.Get("/api/tags");
         return res && res->status == 200;
     }
 
     // Returns empty vector if Ollama is not running or model not found
     std::vector<float> embed(const std::string& text) {
-        httplib::Client cli("http://127.0.0.1:11434");
-        cli.set_connection_timeout(3, 0);
-        cli.set_read_timeout(30, 0);
+        std::lock_guard<std::mutex> lk(embedMu_);
         std::string body = "{\"model\":\"" + embedModel + "\",\"prompt\":\"" + esc(text) + "\"}";
-        auto res = cli.Post("/api/embeddings", body, "application/json");
+        auto res = embedCli_.Post("/api/embeddings", body, "application/json");
         if (!res || res->status != 200) return {};
         return parseEmbedding(res->body);
     }
 
-    // Returns error string if Ollama is unavailable
+    // Returns answer string, or an error message if Ollama is unavailable.
+    // Includes num_ctx and num_predict to control RAM usage during inference.
     std::string generate(const std::string& prompt) {
-       httplib::Client cli("http://127.0.0.1:11434");
-        cli.set_connection_timeout(3, 0);
-        cli.set_read_timeout(180, 0);   // LLMs can be slow
-        std::string body = "{\"model\":\"" + genModel + "\","
-                           "\"prompt\":\"" + esc(prompt) + "\","
-                           "\"stream\":false}";
-        auto res = cli.Post("/api/generate", body, "application/json");
+        std::lock_guard<std::mutex> lk(genMu_);
+        std::string body =
+            "{\"model\":\""   + genModel + "\","
+            "\"prompt\":\""   + esc(prompt) + "\","
+            "\"stream\":false,"
+            "\"options\":{\"num_ctx\":"     + std::to_string(numCtx) +
+                         ",\"num_predict\":" + std::to_string(numPredict) + "}}";
+        auto res = genCli_.Post("/api/generate", body, "application/json");
         if (!res || res->status != 200)
             return "ERROR: Ollama unavailable. Run: ollama serve";
         return parseResponse(res->body);
@@ -764,7 +795,9 @@ public:
         store[item.id] = item;
         VectorItem vi{item.id, title, "doc", emb};
         hnsw.insert(vi, cosine);
-        bf.insert(vi);
+        // BruteForce is only queried when store.size() < 10; cap inserts there
+        // to avoid accumulating a full redundant embedding copy beyond that point.
+        if (store.size() <= 10) bf.insert(vi);
         return item.id;
     }
 
@@ -867,14 +900,30 @@ int main() {
 
     // Check Ollama at startup (non-fatal)
     bool ollamaUp = ollama.isAvailable();
-    std::cout << "=== VectorDB Engine ===" << std::endl;
+    std::cout << "=== OWN-AI Server ===" << std::endl;
     std::cout << "http://localhost:8080" << std::endl;
     std::cout << db.size() << " demo vectors | " << DIMS << " dims | HNSW+KD-Tree+BruteForce" << std::endl;
     std::cout << "Ollama: " << (ollamaUp ? "ONLINE" : "OFFLINE (install from ollama.com)") << std::endl;
-    if (ollamaUp) std::cout << "  embed model: " << ollama.embedModel
-                            << "  gen model: "   << ollama.genModel << std::endl;
+    if (ollamaUp) {
+        std::cout << "  embed model : " << ollama.embedModel << std::endl;
+        std::cout << "  gen model   : " << ollama.genModel   << std::endl;
+        std::cout << "  num_ctx     : " << ollama.numCtx     << " tokens (KV-cache)" << std::endl;
+        std::cout << "  num_predict : " << ollama.numPredict << " max output tokens" << std::endl;
+    }
+    std::cout << "--- RAM guidance ------------------------------------------" << std::endl;
+    std::cout << "  8+ GB : default (llama3, num_ctx=2048) is fine" << std::endl;
+    std::cout << "  6-8 GB: set OWN_AI_GEN_MODEL=llama3.2:3b or phi3:mini" << std::endl;
+    std::cout << "  4-6 GB: set OWN_AI_GEN_MODEL=gemma2:2b OWN_AI_NUM_CTX=1024" << std::endl;
+    std::cout << "  < 4 GB: set OWN_AI_GEN_MODEL=llama3.2:1b OWN_AI_NUM_CTX=1024" << std::endl;
+    std::cout << "  Override: OWN_AI_GEN_MODEL  OWN_AI_EMBED_MODEL" << std::endl;
+    std::cout << "            OWN_AI_NUM_CTX    OWN_AI_NUM_PREDICT" << std::endl;
+    std::cout << "-----------------------------------------------------------" << std::endl;
 
     httplib::Server svr;
+    // Explicit 4-thread pool — sufficient for a single-user local app.
+    // Allows status/search/list requests to proceed concurrently while
+    // a long generate() call is in flight, without unbounded thread growth.
+    svr.new_task_queue = [] { return new httplib::ThreadPool(4); };
 
     // CORS preflight
     svr.Options(".*", [](const httplib::Request&, httplib::Response& res) {
