@@ -357,7 +357,6 @@ Future testing will be manual and controlled.
 Current status
 
 I'd put:
-
 Core chat: ✅
 Multi-turn conversation: ✅ implemented, pending controlled verification
 Persistent history: ✅ implemented, pending verification
@@ -368,9 +367,7 @@ Streaming responses: ⏳ Phase 5
 Full regression testing: ⏳
 
 ### Use a Smaller/Faster LLM
-
 If llama3.2 is too slow on your laptop, switch to the 1B model:
-
 ```powershell
 ollama pull llama3.2:1b
 ```
