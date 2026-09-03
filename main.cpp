@@ -761,6 +761,40 @@ public:
             return "ERROR: Ollama unavailable. Run: ollama serve";
         return parseResponse(res->body);
     }
+
+    // Stream tokens from Ollama REST API.
+    // On each token chunk, calls tokenCb(token_str). Return false from tokenCb to abort stream early.
+    bool generateStream(const std::string& prompt,
+                        std::function<bool(const std::string& token)> tokenCb) {
+        std::lock_guard<std::mutex> lk(genMu_);
+        std::string body =
+            "{\"model\":\""   + genModel + "\","
+            "\"prompt\":\""   + esc(prompt) + "\","
+            "\"stream\":true,"
+            "\"options\":{\"num_ctx\":"     + std::to_string(numCtx) +
+                         ",\"num_predict\":" + std::to_string(numPredict) + "}}";
+
+        httplib::Headers headers = { {"Content-Type", "application/json"} };
+        std::string lineBuf;
+
+        auto res = genCli_.Post(
+            "/api/generate", headers, body, "application/json",
+            [&](const char* data, size_t data_len) -> bool {
+                lineBuf.append(data, data_len);
+                size_t pos = 0;
+                while ((pos = lineBuf.find('\n')) != std::string::npos) {
+                    std::string line = lineBuf.substr(0, pos);
+                    lineBuf.erase(0, pos + 1);
+                    if (line.empty()) continue;
+                    std::string tok = extractStr(line, "response");
+                    if (!tok.empty()) {
+                        if (!tokenCb(tok)) return false; // client aborted
+                    }
+                }
+                return true;
+            });
+        return res && res->status == 200;
+    }
 };
 
 // =====================================================================
@@ -1228,6 +1262,104 @@ int main() {
         }
         ss << "],\"docCount\":" << docDB.size() << '}';
         res.set_content(ss.str(), "application/json");
+    });
+
+    // POST /doc/ask/stream  {"question":"...","k":3,"history":[{"role":"user","content":"..."},...] }
+    // Real-time streaming RAG pipeline using Server-Sent Events (SSE)
+    svr.Post("/doc/ask/stream", [&](const httplib::Request& req, httplib::Response& res) {
+        cors(res);
+        auto question = extractStr(req.body, "question");
+        int  k        = extractInt(req.body, "k", 3);
+        if (question.empty()) {
+            res.set_content("{\"error\":\"need question\"}", "application/json"); return;
+        }
+
+        auto history = parseHistory(req.body);
+        if ((int)history.size() > 10) history.erase(history.begin(), history.begin() + ((int)history.size() - 10));
+
+        // Step 1: embed the question
+        auto qEmb = ollama.embed(question);
+        if (qEmb.empty()) {
+            res.set_content("{\"error\":\"Ollama unavailable\"}", "application/json"); return;
+        }
+
+        // Step 2: retrieve top-k chunks
+        auto hits = docDB.search(qEmb, k);
+
+        // Step 3: filter by relevance threshold
+        const float relevanceThreshold = 0.5f;
+        std::vector<std::pair<float, DocItem>> relevantHits;
+        for (auto& hit : hits) {
+            if (hit.first < relevanceThreshold)
+                relevantHits.push_back(hit);
+        }
+
+        // Step 4a: build conversation history block
+        std::string historyBlock;
+        if (!history.empty()) {
+            historyBlock = "Previous conversation:\n";
+            for (auto& turn : history) {
+                if (turn.role == "user")
+                    historyBlock += "User: " + turn.content + "\n";
+                else
+                    historyBlock += "Assistant: " + turn.content + "\n";
+            }
+            historyBlock += "\n";
+        }
+
+        // Step 4b: build full prompt
+        std::string prompt;
+        if (!relevantHits.empty()) {
+            std::ostringstream ctx;
+            for (int i = 0; i < (int)relevantHits.size(); i++) {
+                ctx << "[" << (i+1) << "] " << relevantHits[i].second.title << ":\n"
+                    << relevantHits[i].second.text << "\n\n";
+            }
+            prompt = "You are a helpful assistant. Answer the user's question directly. "
+                     "Use the provided context if it contains relevant information. "
+                     "If it doesn't, just use your own general knowledge. "
+                     "IMPORTANT: Do NOT mention the 'context', 'provided text', or say things like "
+                     "'the context doesn't mention'. Just answer the question naturally.\n\n"
+                     + historyBlock
+                     + "Context:\n" + ctx.str()
+                     + "Current question: " + question + "\n\n"
+                     + "Answer:";
+        } else {
+            prompt = "You are a helpful assistant. Answer the question clearly and concisely.\n\n"
+                     + historyBlock
+                     + "Current question: " + question + "\n\n"
+                     + "Answer:";
+        }
+
+        // Prepare context payload string for final event
+        std::ostringstream ctxSs;
+        ctxSs << "[";
+        for (size_t i = 0; i < relevantHits.size(); i++) {
+            if (i) ctxSs << ',';
+            ctxSs << "{\"id\":"       << relevantHits[i].second.id
+                  << ",\"title\":"    << jS(relevantHits[i].second.title)
+                  << ",\"text\":"     << jS(relevantHits[i].second.text)
+                  << ",\"distance\":" << std::fixed << std::setprecision(4) << relevantHits[i].first << '}';
+        }
+        ctxSs << "]";
+        std::string contextsJson = ctxSs.str();
+
+        // Step 5: Stream answer over SSE
+        res.set_chunked_content_provider("text/event-stream",
+            [prompt, contextsJson, &ollama](size_t offset, httplib::DataSink& sink) -> bool {
+                if (offset > 0) return false;
+
+                bool ok = ollama.generateStream(prompt, [&](const std::string& token) -> bool {
+                    std::string sse = "data: {\"token\":" + jS(token) + "}\n\n";
+                    return sink.write(sse.data(), sse.size());
+                });
+
+                if (sink.is_writable()) {
+                    std::string finalEv = "data: {\"done\":true,\"contexts\":" + contextsJson + "}\n\n";
+                    sink.write(finalEv.data(), finalEv.size());
+                }
+                return false;
+            });
     });
 
     // GET /status

@@ -138,6 +138,38 @@ Observed results on the 8 GB Mac:
 
 ---
 
+## Phase 6 — Streaming & Response UX
+**Status: ✅ Completed & Tested**
+
+### Problems addressed
+- Previous responses were delivered in a single monolithic payload, causing multi-second delays before any output appeared.
+- Users lacked real-time visual feedback ("Generating..." status) while Ollama was inferring responses.
+- No mechanism existed to stop or cancel long generation requests midway.
+- Repeated keypresses or prompt submissions could launch duplicate in-flight requests.
+
+### Changes implemented
+- **Real-Time Token Streaming**: Added `OllamaClient::generateStream` in `main.cpp` using `"stream": true` and HTTP chunk parsing, paired with a new `POST /doc/ask/stream` Server-Sent Events (SSE) endpoint.
+- **Progressive UI Rendering**: Updated `sendMessage()` in `index.html` to consume SSE streams using browser `ReadableStream`, progressively rendering tokens via `renderMarkdown()` as they arrive.
+- **Interactive Stop / Cancel Generation**: Added a glowing red `⏹ Stop` button during streaming. Triggering `stopGeneration()` invokes `AbortController.abort()`, cleanly closing the HTTP socket and stopping Ollama inference immediately.
+- **Accidental Submission Prevention**: Disabled composer inputs and blocked `Enter` key execution while `isLoading = true`.
+- **History & Context Integration**: Partial or complete streamed outputs are cleanly saved to `chatMessages[]` and `localStorage['own-ai-chats']` (if `Save History` is ON).
+- **Backward Compatibility**: Kept original `/doc/ask` endpoint intact while adding `/doc/ask/stream`.
+
+### Files changed
+- [`main.cpp`](file:///Users/ayanthara/Desktop/OWN-AI/main.cpp) — Added `OllamaClient::generateStream()` and `POST /doc/ask/stream` endpoint.
+- [`index.html`](file:///Users/ayanthara/Desktop/OWN-AI/index.html) — Updated `sendMessage()`, added `stopGeneration()`, `setGeneratingUI()`, and `.send-btn.stop-btn` CSS.
+
+### Testing performed
+- **Backend Compilation**: Compiled cleanly with `g++ -std=c++17 -O2 main.cpp -o server`.
+- **JS Syntax & Unit Tests**: Verified zero syntax errors and passed automated mock unit suite for streaming lifecycle, cancellation, and history serialization.
+- **Stop Generation**: Verified cancelling stream preserves partial response in chat history without corrupting sequence.
+- **Phase 4 & 5 Regression**: Verified low-RAM Ollama config (`llama3.2:3b`), HNSW RAG context retrieval, Save History toggle, and memory drawer remain fully operational.
+
+### Limitations
+- Token rendering speed is tied to local GPU/CPU inference speed of the Ollama model.
+
+---
+
 ## Phase 6 — RAG & Document Intelligence Hardening
 **Status: ⏳ Planned**
 

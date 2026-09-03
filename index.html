@@ -981,6 +981,17 @@
       box-shadow: none;
     }
 
+    .send-btn.stop-btn {
+      background: #ef4444 !important;
+      color: #fff !important;
+      box-shadow: 0 2px 12px rgba(239, 68, 68, .35) !important;
+    }
+
+    .send-btn.stop-btn:hover:not(:disabled) {
+      background: #dc2626 !important;
+      box-shadow: 0 4px 16px rgba(239, 68, 68, .5) !important;
+    }
+
     .send-btn svg {
       width: 14px;
       height: 14px;
@@ -2367,6 +2378,7 @@
     var COL = { cs: '#00d9ff', math: '#b388ff', food: '#ffb74d', sports: '#69f0ae', doc: '#a6e3a1', default: '#90a4ae' };
     var allItems = [], pcaPoints = [], hitIds = new Set(), queryPt = null;
     var hoverItem = null, pulse = 0, selAlgo = 'hnsw', isLoading = false;
+    var currentAbortController = null; // AbortController for streaming cancellation
     var msgCount = 0, chatActive = false;
     var chatEmptyNode = null; // holds the detached #chatEmpty DOM node between chats
     var chatMessages = [];  // { role: 'user'|'assistant', content: string } — in-memory message log for multi-turn context
@@ -3027,6 +3039,31 @@
       var el = document.getElementById('thinkingMsg'); if (el) el.remove();
     }
 
+    function setGeneratingUI(isGen) {
+      isLoading = isGen;
+      var sb = document.getElementById('sendBtn');
+      if (sb) {
+        if (isGen) {
+          sb.className = 'send-btn stop-btn';
+          sb.onclick = stopGeneration;
+          sb.disabled = false;
+          sb.innerHTML = '\u2588 Stop';
+        } else {
+          sb.className = 'send-btn';
+          sb.onclick = sendMessage;
+          sb.disabled = false;
+          sb.innerHTML = 'Send <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="13" x2="13" y2="1"/><polyline points="5,1 13,1 13,9"/></svg>';
+        }
+      }
+    }
+
+    function stopGeneration() {
+      if (currentAbortController) {
+        currentAbortController.abort();
+        currentAbortController = null;
+      }
+    }
+
     async function sendMessage() {
       /* Get text from whichever input is active */
       var inp = document.getElementById('messageInput');
@@ -3037,46 +3074,142 @@
       /* First message: transition from welcome to active chat */
       if (!chatActive) enterActiveChat();
 
-      /* Clear the input in the new sticky composer */
+      /* Clear input in sticky composer */
       var newInp = document.getElementById('messageInput');
       if (newInp) { newInp.value = ''; newInp.style.height = 'auto'; }
 
-      isLoading = true;
-      var sb = document.getElementById('sendBtn');
-      if (sb) sb.disabled = true;
+      setGeneratingUI(true);
 
+      /* Add user message to DOM & history */
       addMessage(text, true);
       addThinking();
 
       var ks = document.getElementById('kSelector');
       var k = ks ? parseInt(ks.value) : 3;
 
+      // Send prior turns as history (exclude current message)
+      var history = chatMessages.slice(0, -1).slice(-10);
+
+      currentAbortController = new AbortController();
+
+      var fullAnswer = "";
+      var aiRowCreated = false;
+      var aiBodyEl = null;
+      var contextsData = null;
+
       try {
-        // Send prior turns as history (exclude the message we just pushed — it's the current question)
-        var history = chatMessages.slice(0, -1).slice(-10);
-        var res = await fetch(API + '/doc/ask', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question: text, k: k, history: history })
+        var res = await fetch(API + '/doc/ask/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: text, k: k, history: history }),
+          signal: currentAbortController.signal
         });
-        var data = await res.json();
-        removeThinking();
-        if (data.error) { addMessage('Error: ' + data.error); }
-        else {
-          addMessage(data.answer);
-          addSources(data.contexts);
-          if (data.contexts && data.contexts.length) {
-            hitIds = new Set(); var sx = 0, sy = 0, sw = 0;
-            data.contexts.forEach(function (c, i) { var pt = pcaPoints.find(function (p) { return p.item.category === 'doc'; }); if (pt) { hitIds.add(pt.item.id); var w = 1 / (i + 1); sx += pt.x * w; sy += pt.y * w; sw += w; } });
-            if (sw > 0) queryPt = { x: sx / sw + (Math.random() - .5) * .01, y: sy / sw + (Math.random() - .5) * .01 };
+
+        if (!res.ok) {
+          removeThinking();
+          addMessage('Error: Server returned status ' + res.status);
+          setGeneratingUI(false);
+          return;
+        }
+
+        var reader = res.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = "";
+
+        while (true) {
+          var readResult;
+          try {
+            readResult = await reader.read();
+          } catch (readErr) {
+            if (readErr.name === 'AbortError') {
+              break; // user clicked Stop Generation
+            }
+            throw readErr;
+          }
+
+          if (readResult.done) break;
+
+          buffer += decoder.decode(readResult.value, { stream: true });
+          var lines = buffer.split('\n');
+          buffer = lines.pop(); // keep last incomplete chunk
+
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (line.indexOf('data: ') === 0) {
+              var jsonStr = line.slice(6);
+              try {
+                var data = JSON.parse(jsonStr);
+                if (data.token) {
+                  if (!aiRowCreated) {
+                    removeThinking();
+                    msgCount++;
+                    var cnt = document.getElementById('infoMsgCount');
+                    if (cnt) cnt.textContent = msgCount;
+
+                    var row = document.createElement('div');
+                    row.className = 'msg-row ai';
+                    var av = document.createElement('div');
+                    av.className = 'ai-av';
+                    av.textContent = '\u25C8';
+                    row.appendChild(av);
+
+                    aiBodyEl = document.createElement('div');
+                    aiBodyEl.className = 'msg-body md-body';
+                    row.appendChild(aiBodyEl);
+
+                    var ma = document.getElementById('messagesArea');
+                    if (ma) ma.appendChild(row);
+                    aiRowCreated = true;
+                  }
+
+                  fullAnswer += data.token;
+                  if (aiBodyEl) {
+                    aiBodyEl.innerHTML = '';
+                    aiBodyEl.appendChild(renderMarkdown(fullAnswer));
+                    scrollChat();
+                  }
+                }
+                if (data.done) {
+                  if (data.contexts) contextsData = data.contexts;
+                }
+              } catch (parseErr) {}
+            }
           }
         }
-      } catch (_) {
+
         removeThinking();
-        addMessage('Connection error \u2014 is the server running?');
+
+        if (fullAnswer.trim()) {
+          // Save streamed output (complete or stopped)
+          chatMessages.push({ role: 'assistant', content: fullAnswer });
+          appendMessageToConvRecord('assistant', fullAnswer);
+
+          if (contextsData && contextsData.length) {
+            addSources(contextsData);
+            hitIds = new Set(); var sx = 0, sy = 0, sw = 0;
+            contextsData.forEach(function (c, i) { var pt = pcaPoints.find(function (p) { return p.item.category === 'doc'; }); if (pt) { hitIds.add(pt.item.id); var w = 1 / (i + 1); sx += pt.x * w; sy += pt.y * w; sw += w; } });
+            if (sw > 0) queryPt = { x: sx / sw + (Math.random() - .5) * .01, y: sy / sw + (Math.random() - .5) * .01 };
+          }
+        } else if (!aiRowCreated) {
+          addMessage('Generation cancelled.');
+        }
+
+      } catch (err) {
+        removeThinking();
+        if (err.name === 'AbortError') {
+          if (fullAnswer.trim()) {
+            chatMessages.push({ role: 'assistant', content: fullAnswer });
+            appendMessageToConvRecord('assistant', fullAnswer);
+          }
+        } else {
+          addMessage('Connection error \u2014 is the server running?');
+        }
       }
-      isLoading = false;
-      var sb2 = document.getElementById('sendBtn'); if (sb2) sb2.disabled = false;
-      var focusInp = document.getElementById('messageInput'); if (focusInp) focusInp.focus();
+
+      currentAbortController = null;
+      setGeneratingUI(false);
+      var focusInp = document.getElementById('messageInput');
+      if (focusInp) focusInp.focus();
     }
 
     /* ═══ DOCUMENTS ══════════════════════════════════════ */
