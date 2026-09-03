@@ -5,7 +5,7 @@
 
 ## Project Goal
 
-Build OWN-AI into a practical local AI assistant with a reliable chat experience, RAG/document capabilities, persistent conversations, a polished UI, and resource usage that is practical on lower-RAM machines.
+Build OWN-AI into a practical local AI assistant with a reliable chat experience, RAG/document capabilities, persistent conversations, useful memory controls, a polished UI, and resource usage that is practical on lower-RAM machines.
 
 ---
 
@@ -44,8 +44,7 @@ Build OWN-AI into a practical local AI assistant with a reliable chat experience
 - Fixed the multi-message input problem caused by duplicate `id="messageInput"` elements.
 - Added frontend conversation state through `chatMessages[]`.
 - Added conversation-history transmission to `/doc/ask`.
-- Added conversation-history persistence using `localStorage`.
-- Added history loading/saving behavior for conversations.
+- Added the initial sidebar history UI.
 
 ### Verification
 - First prompt works.
@@ -80,10 +79,6 @@ Build OWN-AI into a practical local AI assistant with a reliable chat experience
 - Added startup RAM guidance for different memory capacities.
 
 ### Testing
-The default heavy model was replaced for testing with:
-
-`llama3.2:3b`
-
 Current tested configuration:
 
 - Generation model: `llama3.2:3b`
@@ -97,7 +92,7 @@ Observed results on the 8 GB Mac:
 - Short responses took roughly 1–2 seconds in the manual test.
 - A more complex comparison response took roughly 7 seconds.
 - The laptop remained usable during the test.
-- Multi-turn conversation history worked in controlled testing.
+- Multi-turn conversation context worked in controlled testing.
 
 ### Git checkpoint
 - `18d20c8` — checkpoint before performance optimization
@@ -105,14 +100,81 @@ Observed results on the 8 GB Mac:
 
 ---
 
-## Phase 5 — Streaming & Response UX
+## Phase 5 — Conversation Persistence, History & Memory
+**Status: 🚧 In Progress**
+
+### Why this phase is needed
+
+The sidebar currently looks like ChatGPT-style history, but history entries are only stored as titles. Clicking an old conversation does not restore its messages. The current implementation therefore provides a history **appearance**, not a complete history **system**.
+
+### Goals
+- Store complete conversations, not only conversation titles.
+- Give every conversation a stable ID.
+- Save user and assistant messages together.
+- Make sidebar history entries clickable.
+- Restore a selected conversation exactly as it was displayed.
+- Keep conversations separated when using New Chat.
+- Persist conversations across page reloads/browser restarts.
+- Add a user-controlled **Save History** option.
+- Support **Temporary Chat / Don't Save** mode where the conversation disappears after leaving it and is not persisted.
+- Add the foundation for useful long-term memory separate from raw chat history.
+- Allow important information to be stored as memory rather than automatically treating every chat message as permanent memory.
+- Provide a way to view/delete saved memories.
+- Avoid sending unrelated old conversations to the model.
+
+### Planned data model
+Each saved conversation should contain at least:
+
+- `id`
+- `title`
+- `createdAt`
+- `updatedAt`
+- `messages[]`
+- `saved` / persistence state
+
+Each message should contain:
+
+- `role` (`user` or `assistant`)
+- `content`
+- timestamp where useful
+
+Long-term memory should be stored separately from conversation history so that deleting a conversation does not automatically delete an intentionally saved memory.
+
+### Implementation order
+1. Replace title-only history with complete conversation objects.
+2. Add current-conversation ID/state.
+3. Save conversation after each completed assistant response.
+4. Render history from saved conversation objects.
+5. Add click-to-restore behavior.
+6. Make New Chat create a clean conversation boundary.
+7. Add delete conversation support.
+8. Add Save History / Temporary Chat control.
+9. Add separate memory storage and explicit memory actions.
+10. Verify reload/restart behavior.
+
+### Verification targets
+- [ ] First message creates a conversation.
+- [ ] Multiple user/assistant turns are saved in order.
+- [ ] Clicking an old history item restores the complete conversation.
+- [ ] Restored conversations can continue normally.
+- [ ] New Chat does not mix messages with the previous conversation.
+- [ ] History survives page reload.
+- [ ] Temporary chats are not persisted.
+- [ ] Saved history can be deleted.
+- [ ] Explicit memories remain separate from chat history.
+- [ ] Memories can be removed.
+- [ ] No sensitive/unrelated chat data is automatically promoted to memory.
+
+---
+
+## Phase 6 — Streaming & Response UX
 **Status: ⏳ Planned**
 
 ### Goals
 - Stream generated responses instead of waiting for the entire answer.
 - Make long responses feel faster through incremental rendering.
 - Improve loading/typing-state feedback.
-- Preserve the existing multi-turn chat behavior while introducing streaming.
+- Preserve conversation persistence while introducing streaming.
 
 ### Verification targets
 - First token appears quickly.
@@ -123,7 +185,7 @@ Observed results on the 8 GB Mac:
 
 ---
 
-## Phase 6 — RAG & Document Intelligence Hardening
+## Phase 7 — RAG & Document Intelligence Hardening
 **Status: ⏳ Planned**
 
 ### Goals
@@ -137,23 +199,6 @@ Observed results on the 8 GB Mac:
 - Relevant chunks are retrieved.
 - Answers use retrieved context when appropriate.
 - Non-document questions still work normally.
-
----
-
-## Phase 7 — Conversation & History Productization
-**Status: ⏳ Planned**
-
-### Goals
-- Turn the current conversation-history implementation into a complete user-facing history system.
-- Make previous conversations easy to select and restore.
-- Verify persistence across browser/page restarts.
-- Handle new-chat and conversation boundaries cleanly.
-
-### Verification targets
-- New Chat starts a clean conversation.
-- Previous conversations can be restored.
-- History survives page reloads.
-- Current conversation is not accidentally mixed with another conversation.
 
 ---
 
@@ -207,6 +252,9 @@ Observed results on the 8 GB Mac:
 - [ ] Enter and Send button both work.
 - [ ] Unicode works.
 - [ ] Conversation history persists correctly.
+- [ ] Old conversations can be restored.
+- [ ] Temporary Chat works.
+- [ ] Explicit memory works.
 - [ ] RAG/document workflow works.
 - [ ] Streaming works.
 - [ ] Ollama/model configuration is documented.
