@@ -359,8 +359,9 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 7px 18px;
-      width: 100%;
+      padding: 7px 12px 7px 16px;
+      width: calc(100% - 16px);
+      margin: 2px 8px;
       border: none;
       background: transparent;
       color: var(--text2);
@@ -369,11 +370,24 @@
       transition: background var(--tf);
       cursor: pointer;
       overflow: hidden;
+      border-radius: var(--r-sm);
+      position: relative;
     }
 
     .sb-hist:hover {
       background: var(--surface2);
       color: var(--text);
+    }
+
+    .sb-hist.active {
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .sb-hist.active .sh-dot {
+      background: var(--accent);
+      opacity: 1;
     }
 
     .sh-dot {
@@ -391,6 +405,163 @@
       text-overflow: ellipsis;
       flex: 1;
       min-width: 0;
+    }
+
+    .sh-del {
+      display: none;
+      background: transparent;
+      border: none;
+      color: var(--text3);
+      font-size: 13px;
+      cursor: pointer;
+      padding: 2px 5px;
+      border-radius: 4px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .sb-hist:hover .sh-del {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .sh-del:hover {
+      color: #f87171;
+      background: rgba(239, 68, 68, 0.15);
+    }
+
+    /* Save History Toggle Switch */
+    .save-hist-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      margin: 2px 8px;
+      font-size: 12.5px;
+      color: var(--text2);
+      border-radius: var(--r-sm);
+      cursor: pointer;
+      user-select: none;
+      transition: background var(--tf);
+    }
+    .save-hist-toggle:hover {
+      background: var(--surface2);
+      color: var(--text);
+    }
+    .toggle-switch {
+      position: relative;
+      width: 32px;
+      height: 18px;
+      background: var(--surface3);
+      border-radius: 99px;
+      cursor: pointer;
+      transition: background var(--tf);
+    }
+    .toggle-switch.on {
+      background: var(--accent);
+    }
+    .toggle-knob {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform var(--tf);
+    }
+    .toggle-switch.on .toggle-knob {
+      transform: translateX(14px);
+    }
+
+    /* Long-Term Memory Panel */
+    .memory-panel-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.4);
+      z-index: 300;
+      display: none;
+    }
+    .memory-panel-overlay.open {
+      display: block;
+    }
+    .memory-panel {
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 240px;
+      width: 320px;
+      background: var(--bg);
+      border-right: 1px solid var(--border);
+      z-index: 301;
+      display: flex;
+      flex-direction: column;
+      transform: translateX(-100%);
+      transition: transform var(--tm);
+      box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
+    }
+    .memory-panel.open {
+      transform: translateX(0);
+    }
+    .mem-hdr {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 600;
+      font-size: 14.5px;
+      color: var(--text);
+    }
+    .mem-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 16px;
+    }
+    .mem-add-box {
+      padding: 12px 16px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+    }
+    .mem-inp {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
+      color: var(--text);
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+    .mem-inp:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .mem-item {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 12px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
+      margin-bottom: 8px;
+      font-size: 13px;
+      color: var(--text);
+      line-height: 1.4;
+    }
+    .mem-del-btn {
+      background: transparent;
+      border: none;
+      color: var(--text3);
+      cursor: pointer;
+      font-size: 13px;
+      padding: 0 4px;
+    }
+    .mem-del-btn:hover {
+      color: #f87171;
     }
 
     /* Sidebar bottom */
@@ -1830,7 +2001,7 @@
         <circle cx="6.5" cy="6.5" r="4.5" />
         <line x1="10" y1="10" x2="14" y2="14" />
       </svg>
-      <input type="text" id="sbSearch" placeholder="Search conversations…">
+      <input type="text" id="sbSearch" placeholder="Search conversations…" oninput="onSearchInput(this.value)">
     </div>
 
     <!-- Scrollable nav + history -->
@@ -1848,13 +2019,18 @@
       </button>
 
       <div id="histSection" style="display:none">
-        <div class="sb-lbl" style="margin-top:8px">Today</div>
+        <div class="sb-lbl" style="margin-top:8px">Conversations</div>
         <div id="histList"></div>
       </div>
     </div>
 
     <!-- Bottom: theme toggle + user -->
     <div class="sb-bottom">
+      <div class="save-hist-toggle" onclick="toggleSaveHistory()">
+        <span>💾 Save History</span>
+        <div class="toggle-switch on" id="saveHistSwitch"><div class="toggle-knob"></div></div>
+      </div>
+
       <div class="theme-toggle-row">
         <button class="tt-btn" id="ttDark" onclick="setTheme('dark')">
           <svg viewBox="0 0 16 16" fill="currentColor">
@@ -1872,19 +2048,35 @@
         </button>
       </div>
 
-      <button class="sb-item" onclick="">
-        <span class="si">⚙</span> Settings
+      <button class="sb-item" onclick="toggleMemoryPanel()">
+        <span class="si">🧠</span> Memory
       </button>
 
       <div class="sb-user">
         <div class="sb-avatar">U</div>
         <div>
           <div class="sb-uname">Local Workspace</div>
-          <div class="sb-umeta">llama3 · HNSW</div>
+          <div class="sb-umeta">llama3.2 · HNSW</div>
         </div>
       </div>
     </div>
   </aside>
+
+  <!-- Memory Panel Overlay & Drawer -->
+  <div class="memory-panel-overlay" id="memOverlay" onclick="toggleMemoryPanel()"></div>
+  <div class="memory-panel" id="memPanel">
+    <div class="mem-hdr">
+      <span>🧠 Long-Term Memory</span>
+      <button style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;" onclick="toggleMemoryPanel()">✕</button>
+    </div>
+    <div class="mem-body" id="memList">
+      <!-- Memory items rendered here -->
+    </div>
+    <div class="mem-add-box">
+      <input type="text" id="memInp" class="mem-inp" placeholder="Add custom memory note…" onkeydown="if(event.key==='Enter')addMemoryFromInput()">
+      <button class="prim-btn" style="padding:4px 10px;font-size:12px;" onclick="addMemoryFromInput()">Add</button>
+    </div>
+  </div>
 
   <!-- ═══ MAIN ════════════════════════════════════════════════ -->
   <div class="main">
@@ -2165,8 +2357,239 @@
     var hoverItem = null, pulse = 0, selAlgo = 'hnsw', isLoading = false;
     var msgCount = 0, chatActive = false;
     var chatEmptyNode = null; // holds the detached #chatEmpty DOM node between chats
-    var convHistory = [];
     var chatMessages = [];  // { role: 'user'|'assistant', content: string } — in-memory message log for multi-turn context
+    var currentConvId = null;        // active conversation ID
+    var saveHistoryEnabled = true;   // user setting
+    var memoryItems = [];            // long-term memory notes
+
+    /* ═══ UTILITIES & SETTINGS ════════════════════════ */
+    function escHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function loadSettings() {
+      try {
+        var raw = localStorage.getItem('own-ai-settings');
+        if (raw) {
+          var s = JSON.parse(raw);
+          if (typeof s.saveHistory === 'boolean') saveHistoryEnabled = s.saveHistory;
+        }
+      } catch (e) {}
+      updateSaveHistoryUI();
+    }
+
+    function saveSettings() {
+      try {
+        localStorage.setItem('own-ai-settings', JSON.stringify({ saveHistory: saveHistoryEnabled }));
+      } catch (e) {}
+    }
+
+    function toggleSaveHistory() {
+      saveHistoryEnabled = !saveHistoryEnabled;
+      saveSettings();
+      updateSaveHistoryUI();
+    }
+
+    function updateSaveHistoryUI() {
+      var sw = document.getElementById('saveHistSwitch');
+      if (sw) {
+        if (saveHistoryEnabled) sw.classList.add('on');
+        else sw.classList.remove('on');
+      }
+    }
+
+    function generateId(prefix) {
+      return (prefix || 'id') + '_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+    }
+
+    /* ═══ CONVERSATION PERSISTENCE (PHASE 5) ════════════ */
+    function getStoredConvs() {
+      try {
+        var raw = localStorage.getItem('own-ai-chats');
+        return raw ? JSON.parse(raw) : [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    function saveStoredConvs(convs) {
+      try {
+        if (convs.length > 50) convs = convs.slice(0, 50);
+        localStorage.setItem('own-ai-chats', JSON.stringify(convs));
+      } catch (e) {}
+    }
+
+    function startNewConversation(firstMsgText) {
+      if (!saveHistoryEnabled) return;
+      currentConvId = generateId('conv');
+      var title = (firstMsgText || 'New Chat').trim().slice(0, 60);
+      var newConv = {
+        id: currentConvId,
+        title: title,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: []
+      };
+      var convs = getStoredConvs();
+      convs.unshift(newConv);
+      saveStoredConvs(convs);
+      renderConversationList();
+    }
+
+    function appendMessageToConvRecord(role, content) {
+      if (!saveHistoryEnabled || !currentConvId) return;
+      var convs = getStoredConvs();
+      var idx = convs.findIndex(function (c) { return c.id === currentConvId; });
+      if (idx !== -1) {
+        convs[idx].messages.push({ role: role, content: content, ts: Date.now() });
+        convs[idx].updatedAt = Date.now();
+        saveStoredConvs(convs);
+        renderConversationList();
+      }
+    }
+
+    function renderConversationList(filterQuery) {
+      var convs = getStoredConvs();
+      var listEl = document.getElementById('histList');
+      var secEl = document.getElementById('histSection');
+      if (!listEl || !secEl) return;
+
+      if (filterQuery) {
+        var q = filterQuery.toLowerCase();
+        convs = convs.filter(function (c) {
+          return (c.title && c.title.toLowerCase().includes(q)) ||
+            (c.messages && c.messages.some(function (m) { return m.content && m.content.toLowerCase().includes(q); }));
+        });
+      }
+
+      if (!convs.length) {
+        secEl.style.display = 'none';
+        listEl.innerHTML = '';
+        return;
+      }
+
+      secEl.style.display = 'block';
+      listEl.innerHTML = convs.map(function (c) {
+        var activeClass = c.id === currentConvId ? ' active' : '';
+        return '<div class="sb-hist' + activeClass + '" onclick="loadConversation(\'' + c.id + '\')">' +
+          '<span class="sh-dot"></span>' +
+          '<span class="sh-txt">' + escHtml(c.title) + '</span>' +
+          '<button class="sh-del" title="Delete conversation" onclick="event.stopPropagation(); deleteConversation(\'' + c.id + '\')">✕</button>' +
+          '</div>';
+      }).join('');
+    }
+
+    function loadConversation(id) {
+      var convs = getStoredConvs();
+      var conv = convs.find(function (c) { return c.id === id; });
+      if (!conv) return;
+
+      currentConvId = id;
+
+      /* Switch view to chat if not active */
+      switchView('chat');
+      enterActiveChat();
+
+      /* Reset current message area & state */
+      var ma = document.getElementById('messagesArea');
+      if (ma) ma.innerHTML = '';
+      chatMessages = [];
+      msgCount = 0;
+
+      /* Restore all messages */
+      if (conv.messages && conv.messages.length) {
+        conv.messages.forEach(function (m) {
+          addMessage(m.content, m.role === 'user', true); // skipSave = true
+        });
+      }
+
+      renderConversationList();
+    }
+
+    function deleteConversation(id) {
+      var convs = getStoredConvs();
+      convs = convs.filter(function (c) { return c.id !== id; });
+      saveStoredConvs(convs);
+
+      if (currentConvId === id) {
+        newChat();
+      } else {
+        renderConversationList();
+      }
+    }
+
+    function onSearchInput(val) {
+      renderConversationList(val ? val.trim() : '');
+    }
+
+    /* ═══ MEMORY MANAGEMENT (PHASE 5) ═══════════════════ */
+    function loadMemory() {
+      try {
+        var raw = localStorage.getItem('own-ai-memory');
+        memoryItems = raw ? JSON.parse(raw) : [];
+      } catch (e) { memoryItems = []; }
+      renderMemoryPanel();
+    }
+
+    function saveMemory() {
+      try {
+        localStorage.setItem('own-ai-memory', JSON.stringify(memoryItems));
+      } catch (e) {}
+    }
+
+    function addMemoryItem(content) {
+      if (!content || !content.trim()) return;
+      var item = { id: generateId('mem'), content: content.trim(), createdAt: Date.now() };
+      memoryItems.unshift(item);
+      saveMemory();
+      renderMemoryPanel();
+    }
+
+    function deleteMemoryItem(id) {
+      memoryItems = memoryItems.filter(function (m) { return m.id !== id; });
+      saveMemory();
+      renderMemoryPanel();
+    }
+
+    function toggleMemoryPanel() {
+      var p = document.getElementById('memPanel');
+      var o = document.getElementById('memOverlay');
+      if (p && o) {
+        p.classList.toggle('open');
+        o.classList.toggle('open');
+      }
+    }
+
+    function renderMemoryPanel() {
+      var container = document.getElementById('memList');
+      if (!container) return;
+      if (!memoryItems.length) {
+        container.innerHTML = '<div style="color:var(--text3);font-size:13px;text-align:center;margin-top:20px;">No long-term memory notes yet. Add one below.</div>';
+        return;
+      }
+      container.innerHTML = memoryItems.map(function (m) {
+        return '<div class="mem-item">' +
+          '<div style="flex:1;">' + escHtml(m.content) + '</div>' +
+          '<button class="mem-del-btn" onclick="deleteMemoryItem(\'' + m.id + '\')" title="Delete memory">✕</button>' +
+          '</div>';
+      }).join('');
+    }
+
+    function addMemoryFromInput() {
+      var inp = document.getElementById('memInp');
+      if (!inp) return;
+      var val = inp.value.trim();
+      if (val) {
+        addMemoryItem(val);
+        inp.value = '';
+      }
+    }
 
     /* ═══ SIDEBAR ══════════════════════════════════════ */
     function openSidebar() {
@@ -2200,42 +2623,17 @@
       if (name === 'docs') loadDocList();
     }
 
-    /* ═══ CONVERSATION HISTORY ══════════════════════════ */
-    function pushHistory(title) {
-      convHistory.unshift({ title: title.slice(0, 60) });
-      try { localStorage.setItem('own-ai-history', JSON.stringify(convHistory.slice(0, 20))); } catch(e) {}
-      renderHistory();
-    }
-    function renderHistory() {
-      if (!convHistory.length) { document.getElementById('histSection').style.display = 'none'; return; }
-      document.getElementById('histSection').style.display = 'block';
-      document.getElementById('histList').innerHTML = convHistory.slice(0, 10).map(function (c) {
-        return '<div class="sb-hist"><span class="sh-dot"></span>'
-          + '<span class="sh-txt">' + c.title + '</span></div>';
-      }).join('');
-    }
-    /* Load persisted conversation history on startup */
-    (function () {
-      try {
-        var saved = localStorage.getItem('own-ai-history');
-        if (saved) { convHistory = JSON.parse(saved); renderHistory(); }
-      } catch (e) {}
-    })();
-    /* Save the current ongoing chat to history if the user closes the tab */
-    window.addEventListener('beforeunload', function () {
-      if (msgCount > 0 && messagesArea) {
-        var first = messagesArea.querySelector('.msg-row.user .msg-body');
-        if (first && first.textContent) pushHistory(first.textContent);
-      }
-    });
-
     /* ═══ CHAT STATE MANAGEMENT ════════════════════════ */
     function enterActiveChat() {
       if (chatActive) return;
       chatActive = true;
-      /* Hide welcome, show messages + sticky composer */
+
+      /* Hide welcome screen and cache node for potential newChat reset */
       var chatEmptyEl = document.getElementById('chatEmpty');
-      if (chatEmptyEl) chatEmptyEl.remove();
+      if (chatEmptyEl) {
+        if (!chatEmptyNode) chatEmptyNode = chatEmptyEl.cloneNode(true);
+        chatEmptyEl.remove();
+      }
       document.getElementById('messagesArea').classList.add('visible');
       document.getElementById('chatComposer').classList.add('visible');
 
@@ -2286,10 +2684,7 @@
     }
 
     function clearChat() {
-      if (msgCount > 0) {
-        var first = messagesArea ? messagesArea.querySelector('.msg-row.user .msg-body') : null;
-        if (first) pushHistory(first.textContent);
-      }
+      currentConvId = null;
       chatActive = false;
       msgCount = 0;
       chatMessages = [];  // reset multi-turn context for new conversation
@@ -2298,11 +2693,8 @@
 
       /* Reset: restore welcome screen and hide active chat UI */
       var chatCol = document.querySelector('.chat-col');
-      if (chatEmptyNode && chatCol) {
-        // Re-insert the original welcome element (with its textarea, sendBtn, listeners)
-        chatCol.insertBefore(chatEmptyNode, chatCol.firstChild);
-        chatEmptyNode = null;
-        /* Re-bind Enter / input listeners on the restored welcome textarea */
+      if (chatEmptyNode && chatCol && !document.getElementById('chatEmpty')) {
+        chatCol.insertBefore(chatEmptyNode.cloneNode(true), chatCol.firstChild);
         var weInp = document.getElementById('messageInput');
         if (weInp) {
           weInp.value = ''; weInp.style.height = 'auto';
@@ -2325,6 +2717,7 @@
       sendBtn = document.getElementById('sendBtn');
       kSelector = document.getElementById('kSelector');
       if (messageInput) messageInput.value = '';
+      renderConversationList();
       switchView('chat');
     }
 
@@ -2545,12 +2938,21 @@
     }
     /* ── end Phase 2 ── */
 
-    function addMessage(text, isUser) {
+    function addMessage(text, isUser, skipSave) {
       isUser = isUser || false;
+      skipSave = skipSave || false;
+
       chatMessages.push({ role: isUser ? 'user' : 'assistant', content: text }); // track for multi-turn history
       msgCount++;
       var cnt = document.getElementById('infoMsgCount');
       if (cnt) cnt.textContent = msgCount;
+
+      if (!skipSave) {
+        if (isUser && !currentConvId) {
+          startNewConversation(text);
+        }
+        appendMessageToConvRecord(isUser ? 'user' : 'assistant', text);
+      }
 
       var row = document.createElement('div');
       row.className = 'msg-row ' + (isUser ? 'user' : 'ai');
@@ -2572,16 +2974,18 @@
       }
       row.appendChild(body);
 
-      if (messagesArea) {
-        messagesArea.appendChild(row);
+      var ma = document.getElementById('messagesArea');
+      if (ma) {
+        ma.appendChild(row);
         scrollChat();
       }
     }
 
     function addSources(sources) {
       if (!sources || !sources.length) return;
-      if (!messagesArea) return;
-      var aiRows = messagesArea.querySelectorAll('.msg-row.ai');
+      var ma = document.getElementById('messagesArea');
+      if (!ma) return;
+      var aiRows = ma.querySelectorAll('.msg-row.ai');
       if (!aiRows.length) return;
       var lastBody = aiRows[aiRows.length - 1].querySelector('.msg-body');
       if (!lastBody) return;
@@ -2595,7 +2999,8 @@
     }
 
     function addThinking() {
-      if (!messagesArea) return;
+      var ma = document.getElementById('messagesArea');
+      if (!ma) return;
       var row = document.createElement('div');
       row.className = 'think-row'; row.id = 'thinkingMsg';
       var av = document.createElement('div'); av.className = 'ai-av'; av.textContent = '\u25C8';
@@ -2603,7 +3008,7 @@
       var body = document.createElement('div'); body.className = 'think-body';
       body.innerHTML = '<div class="dots"><span></span><span></span><span></span></div><span>Thinking\u2026</span>';
       row.appendChild(body);
-      messagesArea.appendChild(row); scrollChat();
+      ma.appendChild(row); scrollChat();
     }
 
     function removeThinking() {
@@ -2741,6 +3146,9 @@
     }
     window.addEventListener('resize', updateTopbarThemeBtn);
 
+    loadSettings();
+    loadMemory();
+    renderConversationList();
     resize();
     drawFrame();
     loadItems();
@@ -2751,6 +3159,9 @@
       var t = localStorage.getItem('own-ai-theme') || 'dark';
       syncThemeUI(t);
       updateTopbarThemeBtn();
+      loadSettings();
+      loadMemory();
+      renderConversationList();
     });
   </script>
 </body>

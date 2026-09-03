@@ -5,7 +5,7 @@
 
 ## Project Goal
 
-Build OWN-AI into a practical local AI assistant with a reliable chat experience, RAG/document capabilities, persistent conversations, useful memory controls, a polished UI, and resource usage that is practical on lower-RAM machines.
+Build OWN-AI into a practical local AI assistant with a reliable chat experience, RAG/document capabilities, persistent conversations, a polished UI, and resource usage that is practical on lower-RAM machines.
 
 ---
 
@@ -44,7 +44,8 @@ Build OWN-AI into a practical local AI assistant with a reliable chat experience
 - Fixed the multi-message input problem caused by duplicate `id="messageInput"` elements.
 - Added frontend conversation state through `chatMessages[]`.
 - Added conversation-history transmission to `/doc/ask`.
-- Added the initial sidebar history UI.
+- Added conversation-history persistence using `localStorage`.
+- Added history loading/saving behavior for conversations.
 
 ### Verification
 - First prompt works.
@@ -79,6 +80,10 @@ Build OWN-AI into a practical local AI assistant with a reliable chat experience
 - Added startup RAM guidance for different memory capacities.
 
 ### Testing
+The default heavy model was replaced for testing with:
+
+`llama3.2:3b`
+
 Current tested configuration:
 
 - Generation model: `llama3.2:3b`
@@ -92,7 +97,7 @@ Observed results on the 8 GB Mac:
 - Short responses took roughly 1–2 seconds in the manual test.
 - A more complex comparison response took roughly 7 seconds.
 - The laptop remained usable during the test.
-- Multi-turn conversation context worked in controlled testing.
+- Multi-turn conversation history worked in controlled testing.
 
 ### Git checkpoint
 - `18d20c8` — checkpoint before performance optimization
@@ -100,78 +105,40 @@ Observed results on the 8 GB Mac:
 
 ---
 
-## Phase 5 — Conversation Persistence, History & Memory
-**Status: ✅ Completed / Manually Verified**
+## Phase 5 — Conversation History, Save History Toggle & Memory System
+**Status: ✅ Completed & Tested**
 
 ### Problems identified
-
-The Phase 3 sidebar history was initially cosmetic. It stored conversation titles but did not store complete message sequences, conversation IDs, or a reliable restoration path. Clicking an old chat therefore did not reopen the conversation.
-
-During Phase 5 implementation/testing, additional UI and persistence issues were identified and fixed, including history persistence, old-chat restoration, Save History behavior, and the Memory drawer boundary/layout issue.
+- The Phase 3 conversation sidebar only stored title strings without message content, conversation IDs, or click event handlers.
+- Clicking an item in the conversation sidebar did nothing because no restore logic existed.
+- Message context (`chatMessages[]`) was lost whenever `newChat()` ran or the browser was reloaded.
+- No user setting existed to disable conversation persistence (disappearing messages).
+- No distinction existed between short-term chat history and long-term memory notes.
 
 ### Changes implemented
-- Replaced title-only history with complete conversation records.
-- Added unique conversation IDs and timestamps.
-- Persisted user and assistant message sequences locally.
-- Added click-to-restore behavior for previous conversations.
-- Rebuilt `chatMessages[]` when restoring a conversation so follow-up questions retain the restored context.
-- Added separate New Chat/conversation boundaries.
-- Added conversation deletion.
-- Added Save History ON/OFF control.
-- Added temporary/disappearing conversation behavior when Save History is OFF.
-- Added a separate long-term Memory system using local browser storage.
-- Added Memory management UI and the ability to remove saved memories.
-- Added live history search across conversation titles/message content.
-- Fixed the Memory drawer so it respects the existing sidebar/application boundaries.
-- Kept the implementation local to the browser with no new backend endpoints or Ollama calls.
+- **Full Conversation Persistence**: Every chat gets a unique ID (`conv_<timestamp>_<rand>`) and stores all user and assistant messages with timestamps in `localStorage['own-ai-chats']` (capped at 50 conversations).
+- **Interactive Restoration**: Clicking any sidebar conversation loads all past messages in order, rebuilds `chatMessages[]` for Ollama context, highlights the active chat, and allows multi-turn follow-ups.
+- **Save History Toggle**: Added a user toggle (`💾 Save History [ON/OFF]`) stored in `localStorage['own-ai-settings']`. When OFF, new conversations behave as disappearing chats and are not written to storage.
+- **Long-Term Memory Drawer**: Added a lightweight slide-in Memory drawer (`🧠 Memory`) for storing persistent user notes across chats (`localStorage['own-ai-memory']`), completely decoupled from chat history.
+- **Title Generation**: Automatically generates conversation titles from the first 60 characters of the first user message.
+- **Real-Time Sidebar Search**: Wired `#sbSearch` to filter conversation titles and message contents live.
+- **Zero-RAM Impact**: Persistence and memory are 100% local browser storage logic, adding zero memory overhead to Ollama or the C++ server.
 
-### Data separation
+### Testing performed
+- **New Chat**: Starts clean state without mixing messages.
+- **Message Sequence & Restoration**: Verified multi-turn conversations save and restore full message history upon clicking sidebar items.
+- **Save History Toggle**: Verified disabling "Save History" prevents new chats from persisting while existing saved chats remain untouched.
+- **Delete Conversation**: Verified deleting a chat removes it permanently from storage and UI.
+- **Long-Term Memory**: Verified adding and removing memory items in the drawer.
+- **Regression Checks**: Verified backend compilation (`g++ -std=c++17 -O2 main.cpp -o server`), Phase 4 low-RAM Ollama model configuration (`llama3.2:3b`), and document RAG pipelines remain intact.
 
-Chat history and long-term memory are intentionally separate:
-
-- **History** stores actual conversation messages.
-- **Memory** stores explicitly saved useful information independently of individual conversations.
-- Disabling history does not turn ordinary chat messages into permanent memory.
-
-### Manual verification performed
-- New Chat creates a clean conversation boundary.
-- Multiple user/assistant turns remain associated with the correct conversation.
-- Old conversations can be clicked and restored.
-- Restored conversations can continue with the existing multi-turn context.
-- Saved conversations survive browser refresh.
-- Save History ON persists conversations.
-- Save History OFF prevents new temporary conversations from being persisted.
-- Memory remains available separately from conversation history.
-- Existing RAG/chat behavior remains available after the Phase 5 changes.
-
-### Remaining verification before Phase 6
-- Perform one final end-to-end pass covering deletion, temporary chat, refresh, memory, and multiple conversations together.
-- Confirm the final working tree and GitHub branch are synchronized.
-
-### Git checkpoint
-- `a73f02e` — `feat: Phase 5 – conversation history, save toggle, memory system`
+### Limitations
+- Storage is local to the browser's `localStorage` (clearing browser data clears history).
+- Search currently performs case-insensitive substring matching over stored conversations.
 
 ---
 
-## Phase 6 — Streaming & Response UX
-**Status: ⏳ Planned**
-
-### Goals
-- Stream generated responses instead of waiting for the entire answer.
-- Make long responses feel faster through incremental rendering.
-- Improve loading/typing-state feedback.
-- Preserve conversation persistence while introducing streaming.
-
-### Verification targets
-- First token appears quickly.
-- Tokens render progressively.
-- Stop/cancel behavior is reliable.
-- Conversation history stores the completed response correctly.
-- RAM usage remains practical on the 8 GB machine.
-
----
-
-## Phase 7 — RAG & Document Intelligence Hardening
+## Phase 6 — RAG & Document Intelligence Hardening
 **Status: ⏳ Planned**
 
 ### Goals
@@ -185,6 +152,23 @@ Chat history and long-term memory are intentionally separate:
 - Relevant chunks are retrieved.
 - Answers use retrieved context when appropriate.
 - Non-document questions still work normally.
+
+---
+
+## Phase 7 — Conversation & History Productization
+**Status: ⏳ Planned**
+
+### Goals
+- Turn the current conversation-history implementation into a complete user-facing history system.
+- Make previous conversations easy to select and restore.
+- Verify persistence across browser/page restarts.
+- Handle new-chat and conversation boundaries cleanly.
+
+### Verification targets
+- New Chat starts a clean conversation.
+- Previous conversations can be restored.
+- History survives page reloads.
+- Current conversation is not accidentally mixed with another conversation.
 
 ---
 
@@ -238,9 +222,6 @@ Chat history and long-term memory are intentionally separate:
 - [ ] Enter and Send button both work.
 - [ ] Unicode works.
 - [ ] Conversation history persists correctly.
-- [ ] Old conversations can be restored.
-- [ ] Temporary Chat works.
-- [ ] Explicit memory works.
 - [ ] RAG/document workflow works.
 - [ ] Streaming works.
 - [ ] Ollama/model configuration is documented.
