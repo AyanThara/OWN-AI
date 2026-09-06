@@ -15,6 +15,12 @@
 #include <functional>
 #include <fstream>
 #include <climits>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/resource.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 static const int DIMS = 16;   // demo vectors
 // Doc embeddings dimension is determined at runtime from Ollama's model output
@@ -566,6 +572,261 @@ void cors(httplib::Response& res) {
 }
 
 // =====================================================================
+//  PHASE 7 — CODING VERIFICATION & SANDBOXED EXECUTION ENGINE
+// =====================================================================
+
+struct TestCase {
+    std::string input;
+    std::string expected;
+};
+
+struct ExecutionResult {
+    bool success = false;
+    bool compiled = false;
+    bool passedAll = false;
+    int attempts = 1;
+    std::string code;
+    std::string compilerError;
+    std::string runtimeError;
+    std::string stdoutOutput;
+    std::vector<std::string> testLogs;
+};
+
+class CodeVerifier {
+public:
+    static std::string extractCode(const std::string& text) {
+        size_t p = text.find("```cpp");
+        if (p == std::string::npos) p = text.find("```c++");
+        if (p == std::string::npos) p = text.find("```C++");
+        if (p == std::string::npos) p = text.find("```");
+        if (p == std::string::npos) return text;
+
+        size_t start = text.find('\n', p);
+        if (start == std::string::npos) return text;
+        start++;
+
+        size_t end = text.find("```", start);
+        if (end == std::string::npos) return text.substr(start);
+        return text.substr(start, end - start);
+    }
+
+    static bool compileAndRun(const std::string& code,
+                              const std::vector<TestCase>& tests,
+                              ExecutionResult& res,
+                              int timeoutMs = 2000)
+    {
+        res.code = code;
+        res.compiled = false;
+        res.passedAll = false;
+        res.compilerError.clear();
+        res.runtimeError.clear();
+        res.stdoutOutput.clear();
+        res.testLogs.clear();
+
+        mkdir("scratch", 0755);
+        mkdir("scratch/code_runner", 0755);
+
+        auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+        std::string uid = std::to_string(now) + "_" + std::to_string(rand() % 10000);
+        std::string srcPath = "scratch/code_runner/sol_" + uid + ".cpp";
+        std::string binPath = "scratch/code_runner/exec_" + uid;
+
+        {
+            std::ofstream f(srcPath);
+            if (!f.is_open()) {
+                res.compilerError = "Failed to create temp source file";
+                return false;
+            }
+            f << code;
+        }
+
+        std::string compileCmd = "g++ -std=c++17 -Wall -O2 " + srcPath + " -o " + binPath + " 2>&1";
+        FILE* pipe = popen(compileCmd.c_str(), "r");
+        if (!pipe) {
+            res.compilerError = "Failed to run compiler command";
+            unlink(srcPath.c_str());
+            return false;
+        }
+
+        char buffer[256];
+        std::string compErr;
+        while (fgets(buffer, sizeof(buffer), pipe) != NULL) {
+            compErr += buffer;
+        }
+        int compRet = pclose(pipe);
+        unlink(srcPath.c_str());
+
+        if (compRet != 0) {
+            res.compiled = false;
+            res.compilerError = compErr.empty() ? "Compilation failed" : compErr;
+            return false;
+        }
+
+        res.compiled = true;
+
+        if (tests.empty()) {
+            std::string runOut, runErr;
+            int exitCode = executeBinary(binPath, "", runOut, runErr, timeoutMs);
+            unlink(binPath.c_str());
+            if (exitCode != 0) {
+                res.runtimeError = "Runtime exit code " + std::to_string(exitCode) + ": " + runErr;
+                res.testLogs.push_back("Run FAILED: " + runErr);
+                return false;
+            }
+            res.stdoutOutput = runOut;
+            res.testLogs.push_back("Executed successfully.");
+            res.passedAll = true;
+            res.success = true;
+            return true;
+        }
+
+        bool allPassed = true;
+        for (size_t i = 0; i < tests.size(); i++) {
+            std::string runOut, runErr;
+            int exitCode = executeBinary(binPath, tests[i].input, runOut, runErr, timeoutMs);
+            if (exitCode != 0) {
+                allPassed = false;
+                res.runtimeError = "Runtime error on Test " + std::to_string(i + 1) + " (Exit code " + std::to_string(exitCode) + "): " + runErr;
+                res.testLogs.push_back("Test " + std::to_string(i + 1) + " FAILED [Runtime Error]: " + runErr);
+                break;
+            }
+
+            auto trim = [](std::string s) {
+                while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ' || s.back() == '\t')) s.pop_back();
+                size_t p = 0;
+                while (p < s.size() && (s[p] == ' ' || s[p] == '\t' || s[p] == '\n' || s[p] == '\r')) p++;
+                return s.substr(p);
+            };
+
+            std::string normOut = trim(runOut);
+            std::string normExp = trim(tests[i].expected);
+
+            if (normOut == normExp || normExp.empty()) {
+                res.testLogs.push_back("Test " + std::to_string(i + 1) + " PASSED. Output: " + normOut);
+            } else {
+                allPassed = false;
+                res.runtimeError = "Wrong Output on Test " + std::to_string(i + 1) + ": Expected '" + normExp + "', Got '" + normOut + "'";
+                res.testLogs.push_back("Test " + std::to_string(i + 1) + " FAILED. Expected: '" + normExp + "', Got: '" + normOut + "'");
+                break;
+            }
+            if (i == 0) res.stdoutOutput = normOut;
+        }
+
+        unlink(binPath.c_str());
+        res.passedAll = allPassed;
+        res.success = allPassed;
+        return allPassed;
+    }
+
+private:
+    static int executeBinary(const std::string& binPath,
+                             const std::string& input,
+                             std::string& output,
+                             std::string& errStr,
+                             int timeoutMs)
+    {
+        int pipeIn[2], pipeOut[2], pipeErr[2];
+        if (pipe(pipeIn) < 0 || pipe(pipeOut) < 0 || pipe(pipeErr) < 0) {
+            errStr = "Failed to create IPC pipes";
+            return -1;
+        }
+
+        pid_t pid = fork();
+        if (pid < 0) {
+            errStr = "Failed to fork child process";
+            return -1;
+        }
+
+        if (pid == 0) {
+            close(pipeIn[1]);
+            close(pipeOut[0]);
+            close(pipeErr[0]);
+
+            dup2(pipeIn[0], STDIN_FILENO);
+            dup2(pipeOut[1], STDOUT_FILENO);
+            dup2(pipeErr[1], STDERR_FILENO);
+
+            close(pipeIn[0]);
+            close(pipeOut[1]);
+            close(pipeErr[1]);
+
+            struct rlimit rlCpu;
+            rlCpu.rlim_cur = 2;
+            rlCpu.rlim_max = 3;
+            setrlimit(RLIMIT_CPU, &rlCpu);
+
+            struct rlimit rlMem;
+            rlMem.rlim_cur = 512 * 1024 * 1024;
+            rlMem.rlim_max = 512 * 1024 * 1024;
+            setrlimit(RLIMIT_AS, &rlMem);
+
+            struct rlimit rlProc;
+            rlProc.rlim_cur = 0;
+            rlProc.rlim_max = 0;
+            setrlimit(RLIMIT_NPROC, &rlProc);
+
+            char* args[] = { (char*)binPath.c_str(), nullptr };
+            execv(binPath.c_str(), args);
+            _exit(127);
+        }
+
+        close(pipeIn[0]);
+        close(pipeOut[1]);
+        close(pipeErr[1]);
+
+        if (!input.empty()) {
+            write(pipeIn[1], input.c_str(), input.size());
+        }
+        close(pipeIn[1]);
+
+        auto startTime = std::chrono::steady_clock::now();
+        int status = 0;
+        bool timedOut = false;
+
+        while (true) {
+            pid_t r = waitpid(pid, &status, WNOHANG);
+            if (r == pid) break;
+            if (r < 0) break;
+
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - startTime).count();
+            if (elapsed > timeoutMs) {
+                timedOut = true;
+                kill(pid, SIGKILL);
+                waitpid(pid, &status, 0);
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+
+        if (timedOut) {
+            errStr = "Execution timed out (" + std::to_string(timeoutMs) + "ms limit exceeded)";
+            close(pipeOut[0]);
+            close(pipeErr[0]);
+            return -2;
+        }
+
+        char buf[256];
+        ssize_t n;
+        while ((n = read(pipeOut[0], buf, sizeof(buf) - 1)) > 0) {
+            buf[n] = '\0';
+            output += buf;
+        }
+        while ((n = read(pipeErr[0], buf, sizeof(buf) - 1)) > 0) {
+            buf[n] = '\0';
+            errStr += buf;
+        }
+
+        close(pipeOut[0]);
+        close(pipeErr[0]);
+
+        if (WIFEXITED(status)) return WEXITSTATUS(status);
+        if (WIFSIGNALED(status)) return WTERMSIG(status);
+        return -1;
+    }
+};
+
+// =====================================================================
 //  CHAT HISTORY TYPES + PARSER
 // =====================================================================
 
@@ -714,13 +975,18 @@ public:
     explicit OllamaClient(const std::string& h = "127.0.0.1", int p = 11434)
         : embedCli_(h, p), genCli_(h, p), checkCli_(h, p)
     {
-        // Configure timeouts on each persistent client once at construction
+        // Configure timeouts and TCP_NODELAY on persistent clients
         embedCli_.set_connection_timeout(3, 0);
         embedCli_.set_read_timeout(30, 0);
+        embedCli_.set_tcp_nodelay(true);
+
         genCli_.set_connection_timeout(3, 0);
         genCli_.set_read_timeout(180, 0);  // LLMs can be slow
+        genCli_.set_tcp_nodelay(true);
+
         checkCli_.set_connection_timeout(2, 0);
         checkCli_.set_read_timeout(5, 0);
+        checkCli_.set_tcp_nodelay(true);
 
         // Read model overrides from environment (no recompile needed)
         embedModel = "nomic-embed-text";
@@ -776,10 +1042,12 @@ public:
 
         httplib::Headers headers = { {"Content-Type", "application/json"} };
         std::string lineBuf;
+        bool aborted = false;
 
         auto res = genCli_.Post(
             "/api/generate", headers, body, "application/json",
             [&](const char* data, size_t data_len) -> bool {
+                if (aborted) return false;
                 lineBuf.append(data, data_len);
                 size_t pos = 0;
                 while ((pos = lineBuf.find('\n')) != std::string::npos) {
@@ -788,12 +1056,16 @@ public:
                     if (line.empty()) continue;
                     std::string tok = extractStr(line, "response");
                     if (!tok.empty()) {
-                        if (!tokenCb(tok)) return false; // client aborted
+                        if (!tokenCb(tok)) {
+                            aborted = true;
+                            genCli_.stop(); // Close socket immediately to cancel Ollama inference
+                            return false;
+                        }
                     }
                 }
                 return true;
             });
-        return res && res->status == 200;
+        return res && res->status == 200 && !aborted;
     }
 };
 
@@ -954,6 +1226,7 @@ int main() {
     std::cout << "-----------------------------------------------------------" << std::endl;
 
     httplib::Server svr;
+    svr.set_tcp_nodelay(true);
     // Explicit 4-thread pool — sufficient for a single-user local app.
     // Allows status/search/list requests to proceed concurrently while
     // a long generate() call is in flight, without unbounded thread growth.
@@ -1271,6 +1544,7 @@ int main() {
         auto question = extractStr(req.body, "question");
         int  k        = extractInt(req.body, "k", 3);
         if (question.empty()) {
+            res.status = 400;
             res.set_content("{\"error\":\"need question\"}", "application/json"); return;
         }
 
@@ -1280,6 +1554,7 @@ int main() {
         // Step 1: embed the question
         auto qEmb = ollama.embed(question);
         if (qEmb.empty()) {
+            res.status = 503;
             res.set_content("{\"error\":\"Ollama unavailable\"}", "application/json"); return;
         }
 
@@ -1360,6 +1635,144 @@ int main() {
                 }
                 return false;
             });
+    });
+
+    // POST /code/verify {"code":"...", "tests":[{"input":"...", "expected":"..."}, ...]}
+    svr.Post("/code/verify", [&](const httplib::Request& req, httplib::Response& res) {
+        cors(res);
+        auto code = extractStr(req.body, "code");
+        if (code.empty()) {
+            code = CodeVerifier::extractCode(req.body);
+        }
+        if (code.empty()) {
+            res.status = 400;
+            res.set_content("{\"error\":\"need code\"}", "application/json");
+            return;
+        }
+
+        std::vector<TestCase> tests;
+        size_t tp = req.body.find("\"tests\"");
+        if (tp != std::string::npos) {
+            size_t start = req.body.find('[', tp);
+            size_t end = req.body.find(']', start);
+            if (start != std::string::npos && end != std::string::npos) {
+                std::string arr = req.body.substr(start, end - start + 1);
+                size_t p = 0;
+                while ((p = arr.find('{', p)) != std::string::npos) {
+                    size_t e = arr.find('}', p);
+                    if (e == std::string::npos) break;
+                    std::string item = arr.substr(p, e - p + 1);
+                    std::string in  = extractStr(item, "input");
+                    std::string exp = extractStr(item, "expected");
+                    tests.push_back({in, exp});
+                    p = e + 1;
+                }
+            }
+        }
+
+        ExecutionResult execRes;
+        CodeVerifier::compileAndRun(code, tests, execRes);
+
+        std::ostringstream ss;
+        ss << "{\"verified\":"     << (execRes.passedAll ? "true" : "false")
+           << ",\"compiled\":"     << (execRes.compiled ? "true" : "false")
+           << ",\"passedAll\":"    << (execRes.passedAll ? "true" : "false")
+           << ",\"compilerError\":" << jS(execRes.compilerError)
+           << ",\"runtimeError\":"  << jS(execRes.runtimeError)
+           << ",\"stdoutOutput\":"  << jS(execRes.stdoutOutput)
+           << ",\"testLogs\":[";
+        for (size_t i = 0; i < execRes.testLogs.size(); i++) {
+            if (i) ss << ',';
+            ss << jS(execRes.testLogs[i]);
+        }
+        ss << "]}";
+        res.set_content(ss.str(), "application/json");
+    });
+
+    // POST /doc/ask/code {"question":"...", "k":3, "history":[...]}
+    // Automated multi-turn code generation, compilation, verification & self-correction loop
+    svr.Post("/doc/ask/code", [&](const httplib::Request& req, httplib::Response& res) {
+        cors(res);
+        auto question = extractStr(req.body, "question");
+        if (question.empty()) {
+            res.status = 400;
+            res.set_content("{\"error\":\"need question\"}", "application/json");
+            return;
+        }
+
+        auto history = parseHistory(req.body);
+        if ((int)history.size() > 10) history.erase(history.begin(), history.begin() + ((int)history.size() - 10));
+
+        std::string historyBlock;
+        if (!history.empty()) {
+            historyBlock = "Previous conversation:\n";
+            for (auto& turn : history) {
+                if (turn.role == "user")
+                    historyBlock += "User: " + turn.content + "\n";
+                else
+                    historyBlock += "Assistant: " + turn.content + "\n";
+            }
+            historyBlock += "\n";
+        }
+
+        std::string basePrompt =
+            "You are an expert C++ competitive programmer and software engineer.\n"
+            "Provide a complete, production-ready, self-contained C++ program that solves the problem below.\n"
+            "Requirements:\n"
+            "1. Include all necessary header files (#include <iostream>, <vector>, etc.).\n"
+            "2. Include a main() function that reads sample test case input or runs test assertions and prints the output to stdout.\n"
+            "3. Enclose the C++ code inside a ```cpp ``` code block.\n"
+            "4. Provide a clear Time Complexity and Space Complexity analysis at the end.\n\n"
+            + historyBlock
+            + "Coding Question:\n" + question + "\n\n"
+            + "C++ Solution:";
+
+        std::string currentPrompt = basePrompt;
+        std::string rawResponse;
+        ExecutionResult execRes;
+        int maxRetries = 3;
+        int attempt = 0;
+
+        while (attempt < maxRetries) {
+            attempt++;
+            execRes.attempts = attempt;
+            rawResponse = ollama.generate(currentPrompt);
+            std::string code = CodeVerifier::extractCode(rawResponse);
+
+            std::vector<TestCase> emptyTests;
+            bool ok = CodeVerifier::compileAndRun(code, emptyTests, execRes);
+
+            if (ok && execRes.compiled && execRes.passedAll) {
+                break; // Verified success!
+            }
+
+            // Verification failed: construct feedback prompt for self-correction retry
+            if (attempt < maxRetries) {
+                std::string errDetails = execRes.compiled ? execRes.runtimeError : execRes.compilerError;
+                currentPrompt = basePrompt + "\n\n"
+                    + "CRITICAL: Your previous generated C++ solution FAILED verification on Attempt " + std::to_string(attempt) + ".\n"
+                    + "Generated Code:\n```cpp\n" + code + "\n```\n"
+                    + "Error details:\n" + errDetails + "\n\n"
+                    + "Please fix the code above, eliminate any compilation/runtime errors, and return the corrected, self-contained C++ program inside a ```cpp ``` block.";
+            }
+        }
+
+        std::ostringstream ss;
+        ss << "{\"answer\":"         << jS(rawResponse)
+           << ",\"verified\":"       << (execRes.passedAll ? "true" : "false")
+           << ",\"attempts\":"       << execRes.attempts
+           << ",\"compiled\":"       << (execRes.compiled ? "true" : "false")
+           << ",\"passedAll\":"      << (execRes.passedAll ? "true" : "false")
+           << ",\"compilerError\":"   << jS(execRes.compilerError)
+           << ",\"runtimeError\":"    << jS(execRes.runtimeError)
+           << ",\"stdoutOutput\":"    << jS(execRes.stdoutOutput)
+           << ",\"testLogs\":[";
+        for (size_t i = 0; i < execRes.testLogs.size(); i++) {
+            if (i) ss << ',';
+            ss << jS(execRes.testLogs[i]);
+        }
+        ss << "]}";
+        res.set_content(ss.str(), "application/json");
     });
 
     // GET /status

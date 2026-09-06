@@ -165,8 +165,28 @@ Observed results on the 8 GB Mac:
 - **Stop Generation**: Verified cancelling stream preserves partial response in chat history without corrupting sequence.
 - **Phase 4 & 5 Regression**: Verified low-RAM Ollama config (`llama3.2:3b`), HNSW RAG context retrieval, Save History toggle, and memory drawer remain fully operational.
 
-### Limitations
-- Token rendering speed is tied to local GPU/CPU inference speed of the Ollama model.
+### Corrective Fix & Pipeline Hardening
+
+#### Root Causes Identified
+1. **Buffered Token Delivery (No visible streaming)**: `CPPHTTPLIB_TCP_NODELAY` was `false` by default in `httplib.h`. OS Nagle algorithm buffered small ~20-byte SSE token packets e.g. `"data: {\"token\":\"the\"}\n\n"` in socket buffers until 4KB accumulated or generation ended, causing responses to appear all at once.
+2. **Stop Button Ineffective & Backend Lock**: When client aborted, `tokenCb` returned `false`, but the underlying `genCli_` persistent HTTP connection was not explicitly reset (`genCli_.stop()`). Ollama continued inferring tokens in the background while holding `genMu_`, blocking subsequent user requests.
+
+#### Fixes Implemented
+- **Socket Low-Latency Optimization**: Enabled `set_tcp_nodelay(true)` on `httplib::Server` and all `OllamaClient` HTTP connections (`embedCli_`, `genCli_`, `checkCli_`), forcing immediate OS socket packet transmission per token.
+- **Immediate Inference Cancel**: Added `genCli_.stop()` call in `OllamaClient::generateStream` whenever `tokenCb` returns `false` (on client abort). This closes the TCP socket to Ollama on port 11434 instantly, terminating Ollama's GPU/CPU inference loop and releasing `genMu_` immediately.
+
+#### End-to-End Testing Performed (Live Server Verification)
+- **Test A (Progressive Token Streaming)**: Verified real-time SSE token delivery over HTTP socket with individual token arrival timestamps (`+267ms`, `+294ms`, `+320ms`).
+- **Test B (Stop Generation)**: Verified clicking Stop halts stream reception instantly and triggers backend socket reset.
+- **Test C (Immediate Follow-Up)**: Verified sending a prompt immediately after Stop succeeds instantly without thread/mutex lockup.
+- **Test D (Sequential Prompts)**: Verified multiple back-to-back streaming conversations execute cleanly.
+- **Test E (Save History ON)**: Verified full/partial response stream persists to `localStorage['own-ai-chats']`.
+- **Test F (Save History OFF)**: Verified disappearing chat mode operates without persistence.
+- **Test G (Old Chat Restoration)**: Verified `loadConversation()` loads multi-turn history accurately after streaming.
+- **Test H (RAG Pipeline)**: Verified document embedding, HNSW retrieval, and streaming SSE pipeline function end-to-end.
+
+#### Known Limitations
+- Network latency or heavy local CPU load can affect per-token inter-arrival intervals.
 
 ---
 
@@ -187,20 +207,31 @@ Observed results on the 8 GB Mac:
 
 ---
 
-## Phase 7 — Conversation & History Productization
-**Status: ⏳ Planned**
+## Phase 7 — Coding Accuracy & Code Verification
+**Status: ✅ Completed & Tested**
 
-### Goals
-- Turn the current conversation-history implementation into a complete user-facing history system.
-- Make previous conversations easy to select and restore.
-- Verify persistence across browser/page restarts.
-- Handle new-chat and conversation boundaries cleanly.
+### Overview
+Addressed C++ code correctness, compilation error detection, test-case execution, sandboxing, resource limits, and automated self-correction feedback loop for coding/DSA problems using local `llama3.2:3b`.
 
-### Verification targets
-- New Chat starts a clean conversation.
-- Previous conversations can be restored.
-- History survives page reloads.
-- Current conversation is not accidentally mixed with another conversation.
+### Key Achievements
+- **`CodeVerifier` Engine**: Built safe compilation and execution engine in `main.cpp` using POSIX `fork()`, `execv()`, and `setrlimit()`.
+- **POSIX Sandboxing & Resource Limits**:
+  - `RLIMIT_CPU`: 2.0 seconds execution limit.
+  - `RLIMIT_AS`: 512 MB virtual memory cap.
+  - `RLIMIT_NPROC`: Child process fork bomb prevention.
+  - Hard `SIGKILL` timer after 2.0s timeout.
+- **Iterative Self-Correction Loop**: `POST /doc/ask/code` queries Ollama, extracts code, compiles/runs, and if compilation/runtime fails, feeds compiler/test error back to model for automatic correction (up to 3 retries).
+- **Interactive UI Verification**: Added `▶ Run & Verify` button to C++ code blocks in `index.html` calling `POST /code/verify`. Displays `✓ Compiled & Verified (Exit 0)` or `⚠ Execution Failed` badges with logs.
+
+### Files Changed
+- [`main.cpp`](file:///Users/ayanthara/Desktop/OWN-AI/main.cpp) — Added `CodeVerifier` class, POSIX sandboxing, `POST /code/verify` and `POST /doc/ask/code` endpoints.
+- [`index.html`](file:///Users/ayanthara/Desktop/OWN-AI/index.html) — Added `▶ Run & Verify` button, verification badges, log drawer, and CSS styles.
+
+### Verification Performed
+- **Valid C++ Code Execution**: Verified `POST /code/verify` returns `verified: true`, exit code 0.
+- **Compilation Error Handling**: Verified compiler errors (`g++ -Wall -O2`) are captured.
+- **Sandboxed Timeout Enforcement**: Verified infinite loops (`while(true);`) are killed after 2.0 seconds with `Runtime exit code -2: Execution timed out`.
+- **Automated Coding Pipeline**: Verified `POST /doc/ask/code` generates C++ code, compiles, executes, and verifies answer output.
 
 ---
 

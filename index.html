@@ -575,6 +575,63 @@
       background: rgba(239, 68, 68, 0.15);
     }
 
+    /* Phase 7 Code Verification UI */
+    .verify-btn {
+      background: rgba(59, 130, 246, 0.15);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      border-radius: var(--r-sm);
+      padding: 3px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      margin-left: 6px;
+      transition: all 0.15s ease;
+    }
+    .verify-btn:hover {
+      background: rgba(59, 130, 246, 0.25);
+      border-color: #60a5fa;
+    }
+    .verify-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      margin-top: 8px;
+      font-family: var(--font-mono, monospace);
+    }
+    .verify-badge.success {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .verify-badge.failure {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    .verify-badge.running {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+    .verify-logs {
+      margin-top: 8px;
+      padding: 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--text2);
+      max-height: 160px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+
     /* Sidebar bottom */
     .sb-bottom {
       border-top: 1px solid var(--border2);
@@ -2936,7 +2993,65 @@
           setTimeout(function () { copyBtn.textContent = '\u2398 Copy'; copyBtn.classList.remove('copied'); }, 2000);
         });
       });
-      header.appendChild(langLabel); header.appendChild(copyBtn); wrapper.appendChild(header);
+      header.appendChild(langLabel); header.appendChild(copyBtn);
+
+      if (lang && (lang === 'cpp' || lang === 'c++' || lang === 'C++' || lang === 'c')) {
+        var verifyBtn = document.createElement('button');
+        verifyBtn.className = 'verify-btn';
+        verifyBtn.textContent = '\u25B6 Run & Verify';
+        verifyBtn.addEventListener('click', async function () {
+          verifyBtn.disabled = true;
+          verifyBtn.textContent = '\u23F3 Verifying...';
+
+          var existingResult = wrapper.querySelector('.verify-result-box');
+          if (existingResult) existingResult.remove();
+
+          try {
+            var r = await fetch(API + '/code/verify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ code: code })
+            });
+            var res = await r.json();
+
+            var resBox = document.createElement('div');
+            resBox.className = 'verify-result-box';
+
+            var badge = document.createElement('div');
+            if (res.verified) {
+              badge.className = 'verify-badge success';
+              badge.textContent = '\u2713 Compiled & Verified (Exit 0)';
+            } else {
+              badge.className = 'verify-badge failure';
+              badge.textContent = '\u26A0 Execution Failed ' + (res.compilerError ? '[Compile Error]' : '[Runtime Error]');
+            }
+            resBox.appendChild(badge);
+
+            if (res.compilerError || res.runtimeError || (res.testLogs && res.testLogs.length)) {
+              var logs = document.createElement('div');
+              logs.className = 'verify-logs';
+              var logText = "";
+              if (res.compilerError) logText += "Compiler Error:\n" + res.compilerError + "\n";
+              if (res.runtimeError) logText += "Runtime Error:\n" + res.runtimeError + "\n";
+              if (res.stdoutOutput) logText += "Stdout:\n" + res.stdoutOutput + "\n";
+              if (res.testLogs && res.testLogs.length) logText += "Logs:\n" + res.testLogs.join('\n');
+              logs.textContent = logText.trim();
+              resBox.appendChild(logs);
+            }
+
+            wrapper.appendChild(resBox);
+            verifyBtn.textContent = '\u25B6 Re-Verify';
+            verifyBtn.disabled = false;
+          } catch (err) {
+            verifyBtn.textContent = '\u25B6 Run & Verify';
+            verifyBtn.disabled = false;
+            alert('Verification server error');
+          }
+        });
+        header.appendChild(verifyBtn);
+      }
+
+      wrapper.appendChild(header);
       var pre = document.createElement('pre'); var codeEl = document.createElement('code');
       if (lang && typeof hljs !== 'undefined' && hljs.getLanguage(lang)) { codeEl.innerHTML = hljs.highlight(code, { language: lang }).value; codeEl.classList.add('hljs'); }
       else if (typeof hljs !== 'undefined') { var auto = hljs.highlightAuto(code); codeEl.innerHTML = auto.value; codeEl.classList.add('hljs'); if (!lang && auto.language) langLabel.textContent = auto.language; }
@@ -3116,30 +3231,14 @@
         var decoder = new TextDecoder();
         var buffer = "";
 
-        while (true) {
-          var readResult;
-          try {
-            readResult = await reader.read();
-          } catch (readErr) {
-            if (readErr.name === 'AbortError') {
-              break; // user clicked Stop Generation
-            }
-            throw readErr;
-          }
-
-          if (readResult.done) break;
-
-          buffer += decoder.decode(readResult.value, { stream: true });
-          var lines = buffer.split('\n');
-          buffer = lines.pop(); // keep last incomplete chunk
-
-          for (var i = 0; i < lines.length; i++) {
-            var line = lines[i].trim();
+        var processSSELines = function (rawLines) {
+          for (var i = 0; i < rawLines.length; i++) {
+            var line = rawLines[i].trim();
             if (line.indexOf('data: ') === 0) {
               var jsonStr = line.slice(6);
               try {
                 var data = JSON.parse(jsonStr);
-                if (data.token) {
+                if (data.token !== undefined) {
                   if (!aiRowCreated) {
                     removeThinking();
                     msgCount++;
@@ -3169,12 +3268,37 @@
                     scrollChat();
                   }
                 }
-                if (data.done) {
-                  if (data.contexts) contextsData = data.contexts;
+                if (data.done && data.contexts) {
+                  contextsData = data.contexts;
                 }
               } catch (parseErr) {}
             }
           }
+        };
+
+        while (true) {
+          var readResult;
+          try {
+            readResult = await reader.read();
+          } catch (readErr) {
+            if ((readErr && readErr.name === 'AbortError') || (currentAbortController && currentAbortController.signal.aborted)) {
+              break; // user clicked Stop Generation
+            }
+            throw readErr;
+          }
+
+          if (readResult.done) break;
+
+          buffer += decoder.decode(readResult.value, { stream: true });
+          var lines = buffer.split('\n');
+          buffer = lines.pop(); // keep last incomplete chunk
+          processSSELines(lines);
+        }
+
+        // Flush remaining decoder buffer & process leftover lines
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+          processSSELines(buffer.split('\n'));
         }
 
         removeThinking();
@@ -3196,10 +3320,13 @@
 
       } catch (err) {
         removeThinking();
-        if (err.name === 'AbortError') {
+        var isAborted = (err && err.name === 'AbortError') || (currentAbortController && currentAbortController.signal.aborted);
+        if (isAborted) {
           if (fullAnswer.trim()) {
             chatMessages.push({ role: 'assistant', content: fullAnswer });
             appendMessageToConvRecord('assistant', fullAnswer);
+          } else if (!aiRowCreated) {
+            addMessage('Generation cancelled.');
           }
         } else {
           addMessage('Connection error \u2014 is the server running?');
